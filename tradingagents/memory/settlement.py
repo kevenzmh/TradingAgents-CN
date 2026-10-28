@@ -66,7 +66,14 @@ def _is_cn_etf(ticker: str) -> bool:
 
 
 def _fetch_stock_closes(ticker: str, start_date: str, end_date: str) -> Optional[pd.Series]:
-    """取 A 股日线收盘价（含 ETF）：本地 MongoDB 优先，兜底在线 provider。失败抛异常。"""
+    """取 A 股日线收盘价（含 ETF）：本地 MongoDB 优先，兜底在线 provider。失败抛异常。
+
+    复权感知：MongoDB 的历史行情来自多条同步通道（tushare/akshare 走前复权，
+    baostock/qmt 可能是不复权原始价），close 序列本身无法保证复权口径一致。
+    因此结算收益优先用逐日 pct_chg 链乘（涨跌幅与复权方式无关，除权日由
+    交易所按前收盘价折算），仅当记录缺失 pct_chg 时才退回 close 比值——
+    后者在持有窗口跨除权除息日时会把分红错算成亏损。
+    """
     code6 = str(ticker).split(".")[0].zfill(6)
 
     from tradingagents.dataflows.cache.mongodb_cache_adapter import get_mongodb_cache_adapter
@@ -80,14 +87,28 @@ def _fetch_stock_closes(ticker: str, start_date: str, end_date: str) -> Optional
         raise RuntimeError(f"无法获取 {ticker} 的日线数据")
 
     date_col = "trade_date" if "trade_date" in df.columns else "date"
+    dates = pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d")
     closes = pd.Series(
         pd.to_numeric(df["close"], errors="coerce").values,
-        index=pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d"),
+        index=dates,
     )
+    pct_col = None
+    for candidate in ("pct_chg", "change_percent", "pctChg"):
+        if candidate in df.columns:
+            pct_col = candidate
+            break
+    pcts = None
+    if pct_col is not None:
+        pcts = pd.to_numeric(df[pct_col], errors="coerce")
+        pcts = pd.Series(pcts.values, index=dates)
+
     closes = closes[closes > 0].sort_index()
     if closes.empty:
         raise RuntimeError(f"{ticker} 无有效收盘价")
-    return closes[~closes.index.duplicated(keep="last")]
+    closes = closes[~closes.index.duplicated(keep="last")]
+    if pcts is not None:
+        pcts = pcts.loc[closes.index]
+    return closes, pcts
 
 
 def _fetch_closes_from_provider(code6: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -183,7 +204,7 @@ def fetch_returns(
 
     # ETF：MongoDB 的 ETF 行情在独立集合（etf_daily_quotes），adapter 内部
     # 已按代码前缀自动分流；跟踪指数作基准（如无映射则与个股同样用沪深300）
-    stock = _fetch_stock_closes(ticker, fetch_start, fetch_end)
+    stock, stock_pcts = _fetch_stock_closes(ticker, fetch_start, fetch_end)
     bench = _fetch_benchmark_closes(benchmark, bench_start, fetch_end)
 
     # 要求完整持有窗口已走出：个股须有入场后 holding_days+1 个收盘
@@ -196,7 +217,17 @@ def fetch_returns(
     if bench.empty or bench.index[0] > entry_date or bench.index[-1] < exit_date:
         return None, None, None, None
 
-    raw = float((stock.iloc[holding_days] - stock.iloc[0]) / stock.iloc[0])
+    # 收益计算：持有窗口内逐日 pct_chg 链乘（复权无关，跨除权除息日仍准确）；
+    # pct_chg 缺失时退回 close 比值（口径受复权影响，已在取数处说明）
+    window_pcts = None
+    if stock_pcts is not None:
+        window = stock_pcts.iloc[1 : holding_days + 1]
+        if window.notna().all() and len(window) == holding_days:
+            window_pcts = window
+    if window_pcts is not None:
+        raw = float((1.0 + window_pcts / 100.0).prod() - 1.0)
+    else:
+        raw = float((stock.iloc[holding_days] - stock.iloc[0]) / stock.iloc[0])
     # asof 需要时间戳索引；本模块的索引为 "YYYY-MM-DD" 字符串，
     # 排序后按位置查找 <= 目标日期的最后一个收盘即可。
     def _close_asof(series: pd.Series, date: str) -> float:
@@ -248,6 +279,9 @@ def settle_pending(
                 result.failed.append((ticker, entry["date"], "该市场暂不支持自动结算"))
             return result
         for entry in pending:
+            if entry.get("rating") == "待复核":
+                # 读不出倾向的结论无方向可评分：跳过结算，保持待复核状态
+                continue
             try:
                 raw, alpha, days, resolution_date = fetch_returns(
                     ticker,

@@ -17,6 +17,8 @@ _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
 
 # 结论倾向 → 结算评分时的方向声明（乐观=看多，审慎=看空，中性=无方向）
 RATING_DIRECTION = {"乐观": 1, "审慎": -1, "中性": 0}
+# 读不出倾向的结论记为待复核：不参与评分，但保留解析失败的可视 traces
+RATING_REVIEW = "待复核"
 
 
 def parse_rating(final_trade_decision) -> str:
@@ -74,7 +76,9 @@ class TradingMemoryLog:
             return
         rating = rating or parse_rating(final_trade_decision)
         if not rating:
-            return  # 读不出方向的结论无法结算评分，不记录
+            # 读不出倾向的结论记为待复核（上游 REVIEW 模式）：不参与评分，
+            # 但保留在日志里——解析失败率是提示词质量的可观测指标
+            rating = RATING_REVIEW
         with locked(self._log_path):
             if self._log_path.exists():
                 raw = self._log_path.read_text(encoding="utf-8")
@@ -126,7 +130,10 @@ class TradingMemoryLog:
         教训（条目须带 ``resolved:`` 日期）——历史/回测运行不能学习还没
         发生的结果。``as_of=None`` 关闭过滤。
         """
-        entries = [e for e in self.load_entries() if not e.get("pending")]
+        entries = [
+            e for e in self.load_entries()
+            if not e.get("pending") and e.get("rating") != RATING_REVIEW
+        ]
         if as_of is not None:
             entries = [e for e in entries if e.get("resolved") and e["resolved"] <= as_of]
         if not entries:

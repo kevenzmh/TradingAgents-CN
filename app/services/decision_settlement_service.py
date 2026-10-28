@@ -150,11 +150,16 @@ async def _notify_admin_settlement(summary: Dict[str, Any]) -> None:
 async def get_settlement_status() -> Dict[str, Any]:
     """结算状态统计（只读，供 API 展示）。"""
     from tradingagents.memory import create_memory_log, get_holding_period_days
+    from tradingagents.memory.log import RATING_REVIEW
 
     memory_log = create_memory_log()
     entries = memory_log.load_entries()
     pending = [e for e in entries if e.get("pending")]
-    resolved = [e for e in entries if not e.get("pending")]
+    resolved = [
+        e for e in entries
+        if not e.get("pending") and e.get("rating") != RATING_REVIEW
+    ]
+    review = sum(1 for e in entries if e.get("rating") == RATING_REVIEW)
 
     by_rating: Dict[str, Dict[str, Any]] = {}
     for e in resolved:
@@ -191,6 +196,7 @@ async def get_settlement_status() -> Dict[str, Any]:
         "total": len(entries),
         "pending": len(pending),
         "resolved": len(resolved),
+        "review": review,
         "by_rating": by_rating,
         "pending_by_ticker": pending_by_ticker,
         "holding_period_days": get_holding_period_days(),

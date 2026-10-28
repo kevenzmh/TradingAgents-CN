@@ -16,7 +16,6 @@ from tradingagents.memory.settlement import (
     settle_all_pending,
     settle_pending,
 )
-
 __all__ = [
     "TradingMemoryLog",
     "parse_rating",

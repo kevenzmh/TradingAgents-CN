@@ -415,6 +415,8 @@ class Settings(BaseSettings):
     DECISION_SETTLEMENT_CRON: str = Field(default="30 15 * * 1-5", description="决策结算CRON表达式，默认工作日15:30收盘后")
     # 决策日志条数上限（已结算条目轮转，0/负值表示不轮转）
     DECISION_LOG_MAX_ENTRIES: int = Field(default=0, description="决策日志已结算条目上限，0为不轮转")
+    # 分析师工具调用轮次上限（达到后分析师从已有数据强制写报告）
+    ANALYST_MAX_TOOL_CALLS: int = Field(default=3, ge=1, le=50, description="分析师最大工具调用轮次")
 
     # ===== SMTP邮件配置 =====
     SMTP_ENABLED: bool = Field(default=False, description="启用邮件通知功能")

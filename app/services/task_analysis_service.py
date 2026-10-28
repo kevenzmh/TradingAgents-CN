@@ -2104,8 +2104,9 @@ class TaskAnalysisService:
         decision = result.get("decision") or {}
         action = str(decision.get("action") or decision.get("analysis_view") or "").strip()
         if action not in ("乐观", "审慎", "中性"):
-            self.logger.info(f"📜 [决策结算] 结论倾向 '{action}' 无法记录，跳过决策日志")
-            return
+            # 读不出倾向的结论记为待复核（不评分但保留），让解析失败率可观测
+            self.logger.info(f"📜 [决策结算] 结论倾向 '{action}' 待复核，记入决策日志")
+            action = "待复核"
 
         final_text = str(result.get("recommendation") or "")
         if not final_text:

@@ -47,9 +47,34 @@ class TestStoreDecision:
         assert len(entries) == 1
         assert entries[0]["decision"] == "第一次结论"
 
-    def test_unparseable_rating_skipped(self, log):
+    def test_unparseable_rating_recorded_as_review(self, log):
+        """读不出倾向的结论记为待复核（可观测），而非静默丢弃。"""
         log.store_decision("000001", "2026-01-05", "完全读不出倾向的文本", rating="")
-        assert log.load_entries() == []
+        entries = log.load_entries()
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["rating"] == "待复核"
+        assert e["pending"] is True
+
+    def test_review_entry_excluded_from_past_context(self, log):
+        log.store_decision("000001", "2026-01-05", "读不出倾向", rating="")
+        log.update_with_outcome("000001", "2026-01-05", 0.01, 0.01, 5, "不该出现的反思", "2026-01-12")
+        assert log.get_past_context("000001") == ""
+
+    def test_review_entry_not_settled(self, log):
+        from tradingagents.memory import settlement as s
+
+        log.store_decision("000001", "2026-01-05", "读不出倾向", rating="")
+        called = []
+        orig = s.fetch_returns
+        s.fetch_returns = lambda *a, **k: called.append(1) or (0.1, 0.1, 5, "2026-01-12")
+        try:
+            result = s.settle_pending("000001", log, None, config={})
+        finally:
+            s.fetch_returns = orig
+        assert result.settled == []
+        assert not called  # 待复核条目不触发行情拉取
+        assert log.load_entries()[0]["pending"] is True
 
     def test_no_log_path_is_noop(self):
         log = TradingMemoryLog({})
@@ -245,7 +270,7 @@ class TestFetchReturnsWindow:
         # 伪造 3 个收盘（holding_days=5 需要至少 6 个）
         dates = ["2026-01-06", "2026-01-07", "2026-01-08"]
         closes = s.pd.Series([10.0, 10.5, 11.0], index=dates)
-        monkeypatch.setattr(s, "_fetch_stock_closes", lambda *a: closes)
+        monkeypatch.setattr(s, "_fetch_stock_closes", lambda *a: (closes, None))
         monkeypatch.setattr(s, "_fetch_benchmark_closes", lambda *a: closes)
         raw, alpha, days, res = s.fetch_returns("000001", "2026-01-05", 5, "000300.SH")
         assert raw is None and alpha is None
@@ -257,7 +282,7 @@ class TestFetchReturnsWindow:
         stock = s.pd.Series([10.0, 10.5, 11.0, 10.8, 11.2, 12.0], index=stock_dates)
         bench_dates = ["2026-01-05"] + stock_dates
         bench = s.pd.Series([100.0] * 7, index=bench_dates)
-        monkeypatch.setattr(s, "_fetch_stock_closes", lambda *a: stock)
+        monkeypatch.setattr(s, "_fetch_stock_closes", lambda *a: (stock, None))
         monkeypatch.setattr(s, "_fetch_benchmark_closes", lambda *a: bench)
         raw, alpha, days, res = s.fetch_returns("000001", "2026-01-05", 5, "000300.SH")
         assert days == 5
@@ -265,6 +290,35 @@ class TestFetchReturnsWindow:
         # 12.0 / 10.0 - 1 = +20%（基准 0 收益）
         assert raw == pytest.approx(0.2)
         assert alpha == pytest.approx(0.2)
+
+    def test_pct_chain_ignores_adjustment_gaps(self, monkeypatch):
+        """复权一致性：窗口跨除权日时，pct_chg 链乘结果不受 close 跳变影响。"""
+        from tradingagents.memory import settlement as s
+
+        stock_dates = [f"2026-01-{d:02d}" for d in range(6, 16)][:6]
+        # 除权日 close 从 11.0 跳到 5.0（如 10 送 10），pct_chg 仍是真实日收益
+        stock = s.pd.Series([10.0, 10.5, 11.0, 5.4, 5.5, 5.6], index=stock_dates)
+        pcts = s.pd.Series([1.0, 4.76, 4.76, 1.85, 1.85, 1.82], index=stock_dates)
+        bench = s.pd.Series([100.0] * 7, index=["2026-01-05"] + stock_dates)
+        monkeypatch.setattr(s, "_fetch_stock_closes", lambda *a: (stock, pcts))
+        monkeypatch.setattr(s, "_fetch_benchmark_closes", lambda *a: bench)
+        raw, alpha, days, res = s.fetch_returns("000001", "2026-01-05", 5, "000300.SH")
+        # 链乘 4 天真实日收益 ≈ +14.2%，远不等于 close 比值 5.6/10-1 = -44%
+        assert raw == pytest.approx((1.0476 * 1.0476 * 1.0185 * 1.0185 * 1.0182) - 1, rel=1e-3)
+        assert raw > 0
+
+    def test_pct_missing_falls_back_to_close(self, monkeypatch):
+        from tradingagents.memory import settlement as s
+
+        stock_dates = [f"2026-01-{d:02d}" for d in range(6, 16)][:6]
+        stock = s.pd.Series([10.0, 10.5, 11.0, 10.8, 11.2, 12.0], index=stock_dates)
+        # 有 pct 列但窗口内有 NaN → 退回 close 比值
+        pcts = s.pd.Series([1.0, 4.76, None, 1.85, 1.85, 1.82], index=stock_dates)
+        bench = s.pd.Series([100.0] * 7, index=["2026-01-05"] + stock_dates)
+        monkeypatch.setattr(s, "_fetch_stock_closes", lambda *a: (stock, pcts))
+        monkeypatch.setattr(s, "_fetch_benchmark_closes", lambda *a: bench)
+        raw, alpha, days, res = s.fetch_returns("000001", "2026-01-05", 5, "000300.SH")
+        assert raw == pytest.approx(0.2)
 
     def test_future_date_returns_none(self, monkeypatch):
         from tradingagents.memory import settlement as s

@@ -228,7 +228,8 @@ class WorkflowEngine:
         legacy_config: Optional[Dict[str, Any]] = None,
         task_id: Optional[str] = None,
         use_dynamic_state: bool = True,  # 🔥 改为默认启用，动态 Agent 工作流需要
-        llm: Optional[Any] = None
+        llm: Optional[Any] = None,
+        checkpointer: Optional[Any] = None,
     ):
         """
         初始化工作流引擎
@@ -238,6 +239,7 @@ class WorkflowEngine:
             task_id: 任务 ID（用于进度跟踪）
             use_dynamic_state: 是否使用动态状态生成（默认 True，支持动态 Agent 字段）
             llm: 可选的 LLM 实例（优先于 legacy_config）
+            checkpointer: 可选的 LangGraph checkpointer（断点续跑，见 builder.build）
         """
         self._definition: Optional[WorkflowDefinition] = None
         self._compiled_graph = None
@@ -247,6 +249,7 @@ class WorkflowEngine:
         self._validator = WorkflowValidator()
         self._current_execution: Optional[WorkflowExecution] = None
         self._progress_callback: Optional[Callable] = None
+        self._checkpointer = checkpointer
 
         # 🆕 进度跟踪状态（按已完成 agent 数 / 总数计算进度，只增不减）
         self._progress_agent_nodes = []      # 有 agent_id 的 agent 节点列表
@@ -322,7 +325,9 @@ class WorkflowEngine:
                 logger.info(f"[WorkflowEngine] 状态字段: {list(schema.fields.keys())}")
 
         # 构建图
-        self._compiled_graph = self._builder.build(self._definition, state_schema=state_schema)
+        self._compiled_graph = self._builder.build(
+            self._definition, state_schema=state_schema, checkpointer=self._checkpointer
+        )
         return self
 
     def _extract_agent_ids(self, definition: WorkflowDefinition) -> list:

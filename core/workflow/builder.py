@@ -213,6 +213,28 @@ def _select_llm_type_for_agent(agent_id: str) -> str:
     return "deep" if normalized_agent_id in _DEEP_AGENTS else "quick"
 
 
+def _get_analyst_max_tool_calls() -> int:
+    """分析师最大工具调用轮次：env（AGENT_MAX_TOOL_CALLS）> Settings > 默认 3。
+
+    达到上限后分析师从已有数据强制写报告，防止工具调用死循环；
+    需要多数据源交叉验证的分析可调高。
+    """
+    import os as _os
+
+    env_val = _os.getenv("AGENT_MAX_TOOL_CALLS")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except ValueError:
+            pass
+    try:
+        from app.core.config import get_settings as _get_settings
+
+        return max(1, int(_get_settings().ANALYST_MAX_TOOL_CALLS))
+    except Exception:
+        return 3
+
+
 class LegacyDependencyProvider:
     """
     遗留智能体依赖提供者
@@ -1036,6 +1058,7 @@ class WorkflowBuilder:
         self,
         definition: WorkflowDefinition,
         state_schema: Optional[type] = None,
+        checkpointer=None,
     ):
         """
         构建 LangGraph 图
@@ -1043,6 +1066,9 @@ class WorkflowBuilder:
         Args:
             definition: 工作流定义
             state_schema: 状态模式 (默认使用通用字典)
+            checkpointer: 可选的 LangGraph checkpointer（断点续跑）；
+                传入后每个节点执行完保存状态，崩溃的运行可从最后
+                成功的节点恢复而不是从头开始
 
         Returns:
             编译后的 LangGraph
@@ -1181,7 +1207,12 @@ class WorkflowBuilder:
             parallel_opening_nodes=parallel_opening_nodes,
         )
 
-        # 编译
+        # 编译（checkpointer 存在时启用断点续跑）
+        if checkpointer is not None:
+            try:
+                return graph.compile(checkpointer=checkpointer)
+            except TypeError:
+                logger.warning("[图构建] LangGraph 不接受 checkpointer 参数，按普通模式编译")
         return graph.compile()
 
     def _filter_analyst_nodes(self, definition: WorkflowDefinition) -> WorkflowDefinition:
@@ -1355,7 +1386,7 @@ class WorkflowBuilder:
             last_message = messages[-1]
             report = state.get(report_field, "")
             tool_call_count = state.get(tool_count_field, 0)
-            max_tool_calls = 3  # 最大工具调用次数
+            max_tool_calls = _get_analyst_max_tool_calls()
 
             logger.info(f"🔀 [{node_id}] 条件判断 (独立消息: {messages_key}):")
             logger.info(f"  - 消息数量: {len(messages)}")
