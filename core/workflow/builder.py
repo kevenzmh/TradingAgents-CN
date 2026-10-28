@@ -1598,6 +1598,11 @@ class WorkflowBuilder:
             # （bull/bear）与风险评估环节（risk_manager）消费，其他环节不受影响
             memory_facts_summary: Annotated[str, keep_non_empty]
 
+            # 🆕 决策教训注入（决策结算闭环 tradingagents.memory 产出）
+            # 含历史研究结论的实际收益、相对基准超额收益与反思教训，
+            # 同样仅辩论环节（bull/bear）与风险评估环节消费
+            decision_lessons_summary: Annotated[str, keep_non_empty]
+
         # 🔥 动态注入工坊 Agent 的 output_field 到 State schema
         # LangGraph 的 StateGraph 只会保留 schema 中声明的字段，未声明的字段会被丢弃
         # 工坊创建的 Agent（如 valuation_analyst_v1）使用自定义 output_field（如 valuation_report）

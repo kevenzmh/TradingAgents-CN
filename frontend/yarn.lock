@@ -57,11 +57,6 @@
   resolved "https://registry.npmmirror.com/@esbuild/win32-x64/-/win32-x64-0.21.5.tgz"
   integrity sha512-tQd/1efJuzPC6rCFwEvLtci/xNFcTZknmXs98FYDfGE4wP9ClFV98nyKrzJKVPMhdDnjzLhdUyMX4PsQAPjwIw==
 
-"@esbuild/win32-x64@0.28.2":
-  version "0.28.2"
-  resolved "https://registry.npmmirror.com/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz"
-  integrity sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==
-
 "@eslint-community/eslint-utils@^4.2.0", "@eslint-community/eslint-utils@^4.4.0":
   version "4.10.1"
   resolved "https://registry.npmmirror.com/@eslint-community/eslint-utils/-/eslint-utils-4.10.1.tgz"
@@ -1506,7 +1501,7 @@ es-set-tostringtag@^2.1.0:
     has-tostringtag "^1.0.2"
     hasown "^2.0.2"
 
-esbuild@^0.21.3:
+esbuild@^0.21.3, "esbuild@^0.27.0 || ^0.28.0":
   version "0.21.5"
   resolved "https://registry.npmmirror.com/esbuild/-/esbuild-0.21.5.tgz"
   integrity sha512-mg3OPMV4hXywwpoDxu3Qda5xCKQi+vCTZq8S9J/EpkhB2HzKXq4SNFZE3+NK93JYxc8VMSep+lOUSC/RVKaBqw==
@@ -1534,38 +1529,6 @@ esbuild@^0.21.3:
     "@esbuild/win32-arm64" "0.21.5"
     "@esbuild/win32-ia32" "0.21.5"
     "@esbuild/win32-x64" "0.21.5"
-
-"esbuild@^0.27.0 || ^0.28.0":
-  version "0.28.2"
-  resolved "https://registry.npmmirror.com/esbuild/-/esbuild-0.28.2.tgz"
-  integrity sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==
-  optionalDependencies:
-    "@esbuild/aix-ppc64" "0.28.2"
-    "@esbuild/android-arm" "0.28.2"
-    "@esbuild/android-arm64" "0.28.2"
-    "@esbuild/android-x64" "0.28.2"
-    "@esbuild/darwin-arm64" "0.28.2"
-    "@esbuild/darwin-x64" "0.28.2"
-    "@esbuild/freebsd-arm64" "0.28.2"
-    "@esbuild/freebsd-x64" "0.28.2"
-    "@esbuild/linux-arm" "0.28.2"
-    "@esbuild/linux-arm64" "0.28.2"
-    "@esbuild/linux-ia32" "0.28.2"
-    "@esbuild/linux-loong64" "0.28.2"
-    "@esbuild/linux-mips64el" "0.28.2"
-    "@esbuild/linux-ppc64" "0.28.2"
-    "@esbuild/linux-riscv64" "0.28.2"
-    "@esbuild/linux-s390x" "0.28.2"
-    "@esbuild/linux-x64" "0.28.2"
-    "@esbuild/netbsd-arm64" "0.28.2"
-    "@esbuild/netbsd-x64" "0.28.2"
-    "@esbuild/openbsd-arm64" "0.28.2"
-    "@esbuild/openbsd-x64" "0.28.2"
-    "@esbuild/openharmony-arm64" "0.28.2"
-    "@esbuild/sunos-x64" "0.28.2"
-    "@esbuild/win32-arm64" "0.28.2"
-    "@esbuild/win32-ia32" "0.28.2"
-    "@esbuild/win32-x64" "0.28.2"
 
 escape-html@^1.0.3:
   version "1.0.3"

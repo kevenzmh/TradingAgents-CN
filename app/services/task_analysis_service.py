@@ -253,6 +253,22 @@ class TaskAnalysisService:
             task.progress = 0
             await self._update_task(task)
 
+            # 📜 决策结算闭环：股票分析开始前，结算该股票到期的历史结论
+            # （实际收益 + 相对基准 alpha + 反思教训），失败不影响本次分析。
+            if task.task_type == AnalysisTaskType.STOCK_ANALYSIS:
+                symbol_val = str((task.task_params or {}).get("symbol")
+                                 or (task.task_params or {}).get("stock_code") or "").strip()
+                if symbol_val:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(self._settle_pending_decisions, symbol_val),
+                            timeout=120,
+                        )
+                    except asyncio.TimeoutError:
+                        self.logger.warning(f"⚠️ 决策结算超时(忽略): {task.task_id}")
+                    except Exception as settle_err:
+                        self.logger.warning(f"⚠️ 决策结算失败(不影响分析): {settle_err}")
+
             # 🔑 关键：同时更新内存状态
             from app.services.memory_state_manager import get_memory_state_manager, TaskStatus
             memory_manager = get_memory_state_manager()
@@ -309,6 +325,19 @@ class TaskAnalysisService:
             # 避免前端检测到 progress=100 后立即请求 /result 时数据尚未就绪的竞态条件。
             task.status = AnalysisStatus.COMPLETED
             await self._update_task(task)
+
+            # 📜 决策结算闭环：股票分析完成后记录决策（失败不影响分析结果）。
+            # 结算（收益与 alpha 评分 + 反思）在该股票的下一次分析开始时执行。
+            if task.task_type == AnalysisTaskType.STOCK_ANALYSIS:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._record_decision_for_settlement, task, formatted_result),
+                        timeout=15,
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning(f"⚠️ 决策结算记录超时(忽略): {task.task_id}")
+                except Exception as settlement_err:
+                    self.logger.warning(f"⚠️ 决策结算记录失败(忽略): {settlement_err}")
 
             # 🔑 关键：更新内存状态为完成（前端轮询依赖此状态）
             from app.services.memory_state_manager import get_memory_state_manager, TaskStatus
@@ -2050,6 +2079,115 @@ class TaskAnalysisService:
         except Exception as e:
             self.logger.error(f"❌ 保存到 analysis_reports 失败: {e}", exc_info=True)
             return None  # 🔑 保存失败时返回 None
+
+    def _record_decision_for_settlement(self, task: UnifiedAnalysisTask, result: Dict[str, Any]) -> None:
+        """把股票分析的研究结论记入决策日志，供持有窗口走出后结算评分。
+
+        仅记录可解析出合规结论倾向（乐观/审慎/中性）的结论；同一
+        (分析日期, 代码) 重复分析不重复记录。ETF 不参与（结算走个股价格）。
+        """
+        symbol = str((task.task_params or {}).get("symbol")
+                     or (task.task_params or {}).get("stock_code") or "").strip()
+        if not symbol or _is_cn_etf_symbol(symbol):
+            return
+
+        from tradingagents.utils.stock_utils import StockUtils, StockMarket
+        if StockUtils.identify_stock_market(symbol) != StockMarket.CHINA_A:
+            # 结算价格通道目前仅覆盖 A 股，其他市场先不记录
+            return
+
+        analysis_date = str(
+            (task.task_params or {}).get("analysis_date") or now_tz().strftime("%Y-%m-%d")
+        ).strip()[:10]
+
+        decision = result.get("decision") or {}
+        action = str(decision.get("action") or decision.get("analysis_view") or "").strip()
+        if action not in ("乐观", "审慎", "中性"):
+            self.logger.info(f"📜 [决策结算] 结论倾向 '{action}' 无法记录，跳过决策日志")
+            return
+
+        final_text = str(result.get("recommendation") or "")
+        if not final_text:
+            final_text = f"研究结论：{action}。{str(decision.get('reasoning') or '')}"
+
+        from tradingagents.memory import create_memory_log
+
+        memory_log = create_memory_log()
+        memory_log.store_decision(symbol, analysis_date, final_text, rating=action)
+        self.logger.info(f"📜 [决策结算] 已记录决策: {symbol} @ {analysis_date} 倾向={action}")
+
+    def _settle_pending_decisions(self, symbol: str) -> None:
+        """结算该股票到期的 pending 决策（同步方法，供线程池调用）。
+
+        价格/基准/LLM 任一失败都只记录告警，保持条目 pending 供下次重试。
+        """
+        from tradingagents.memory import create_memory_log, settle_pending
+
+        memory_log = create_memory_log()
+        try:
+            reflector = self._create_settlement_reflector()
+        except Exception as e:
+            self.logger.warning(f"⚠️ [决策结算] 反思模型不可用，退化为仅记录结果: {e}")
+            reflector = None
+
+        result = settle_pending(symbol, memory_log, reflector, config={})
+        if result.settled or result.failed:
+            self.logger.info(
+                f"📜 [决策结算] {symbol}: 已结算 {len(result.settled)} 条, "
+                f"失败 {len(result.failed)} 条"
+            )
+            for _ticker, date, reason in result.failed[:5]:
+                self.logger.warning(f"⚠️ [决策结算] {symbol} {date}: {reason}")
+
+    def _create_settlement_reflector(self):
+        """为结算构建反思用的快速 LLM（走系统默认模型配置）。"""
+        from tradingagents.memory import Reflector
+        from tradingagents.graph.trading_graph import create_llm_by_provider
+        from app.services.simple_analysis_service import (
+            get_provider_and_url_by_model_sync,
+            _load_model_config_from_db,
+        )
+
+        model = self._default_quick_model_name()
+        cfg = get_provider_and_url_by_model_sync(model)
+        provider = cfg.get("provider", "dashscope")
+        url = cfg.get("backend_url", "")
+        db_cfg = _load_model_config_from_db(model)
+        llm = create_llm_by_provider(
+            provider=provider,
+            model=model,
+            backend_url=url,
+            temperature=db_cfg.get("temperature", 0.3),
+            max_tokens=db_cfg.get("max_tokens", 2000),
+            timeout=db_cfg.get("timeout", 120),
+            api_key=cfg.get("api_key"),
+        )
+        return Reflector(llm)
+
+    @staticmethod
+    def _default_quick_model_name() -> str:
+        """读取系统默认快速模型；数据库不可用时退回环境变量或 qwen-turbo。"""
+        try:
+            from pymongo import MongoClient
+            from app.core.config import settings
+
+            client = MongoClient(settings.MONGO_URI, serverSelectionTimeoutMS=3000)
+            db = client[settings.MONGO_DB]
+            doc = db.system_configs.find_one({"is_active": True}, sort=[("version", -1)])
+            if doc:
+                defaults = doc.get("default_models") or {}
+                sys_settings = doc.get("system_settings") or {}
+                model = (
+                    defaults.get("quick_analysis_model")
+                    or sys_settings.get("quick_analysis_model")
+                )
+                if model:
+                    return str(model)
+        except Exception:
+            pass
+        import os
+
+        return os.getenv("TRADINGAGENTS_QUICK_MODEL", "qwen-turbo")
 
     async def _store_stock_object_memory(self, task: UnifiedAnalysisTask, result: Dict[str, Any]) -> None:
         """将后台任务的股票分析结果写入对象化长期记忆。"""

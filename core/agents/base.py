@@ -1633,6 +1633,14 @@ class BaseAgent(ABC):
                         prompt = prompt + "\n\n" + memory_block
                         logger.info(f"🧠 [事实记忆注入] {agent_name}: 已追加外部事实记忆参考")
 
+                    # 📜 决策教训注入：决策结算闭环（tradingagents.memory）写入的
+                    # history_lessons_summary，含历史结论的实际收益与反思教训，
+                    # 消费白名单同上。
+                    lessons_block = state.get("decision_lessons_summary")
+                    if isinstance(lessons_block, str) and lessons_block.strip():
+                        prompt = prompt + "\n\n" + lessons_block
+                        logger.info(f"📜 [决策教训注入] {agent_name}: 已追加历史决策教训参考")
+
                 return prompt
             else:
                 logger.warning(f"模板系统返回空提示词，使用降级提示词")

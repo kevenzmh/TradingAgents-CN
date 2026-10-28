@@ -180,3 +180,6 @@ deploy-all-in-one/wheels/
 
 nul
 node_modules
+
+# 上游参考代码（对比分析用，不属于本项目）
+upstream_ref/

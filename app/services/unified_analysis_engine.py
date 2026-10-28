@@ -496,6 +496,38 @@ class UnifiedAnalysisEngine:
         except Exception as e:
             self.logger.warning(f"⚠️ [事实记忆注入] 失败（不影响分析）: {e}")
 
+    async def _inject_decision_lessons(self, workflow_inputs: Dict[str, Any]) -> None:
+        """从决策日志注入该股票的历史教训（失败不影响分析）。
+
+        来源为 tradingagents.memory 的决策结算闭环：已结算结论带有实际收益、
+        相对基准的超额收益与反思教训。注入文本供辩论环节（bull/bear）与
+        风险评估环节（risk_manager）参考，消费方见 core/agents/base.py 的
+        注入白名单。历史日期的分析只学习当时已知的结果（as_of 过滤）。
+        """
+        try:
+            ticker_val = str(workflow_inputs.get("ticker") or "").strip()
+            if not ticker_val:
+                return
+            from tradingagents.memory import create_memory_log
+
+            memory_log = create_memory_log()
+            analysis_date = workflow_inputs.get("analysis_date")
+            as_of = str(analysis_date).strip() if analysis_date else None
+            context = memory_log.get_past_context(ticker_val, as_of=as_of)
+            if not context:
+                return
+            workflow_inputs["decision_lessons_summary"] = (
+                "【历史决策教训】以下是本系统此前对该标的（及其他标的）的研究结论"
+                "及其结算后的实际表现与反思教训（含原始收益、相对基准的超额收益）。"
+                "可将其作为本次分析材料的一部分参考，避免重复此前的错误判断；"
+                "若市场环境已发生显著变化，请自行判断教训的适用性。\n\n" + context
+            )
+            self.logger.info(
+                "🧠 [决策教训注入] ticker=%s 已注入历史决策教训", ticker_val,
+            )
+        except Exception as e:
+            self.logger.warning(f"⚠️ [决策教训注入] 失败（不影响分析）: {e}")
+
     async def _execute_via_workflow(
         self,
         task: UnifiedAnalysisTask,
@@ -604,6 +636,7 @@ class UnifiedAnalysisEngine:
         # 写入 memory_facts_summary 供辩论环节（bull/bear）与风险评估环节（risk_manager）
         # 作为分析材料参考（消费方见 core/agents/base.py 的事实记忆注入白名单）。
         await self._inject_memory_facts(workflow_inputs)
+        await self._inject_decision_lessons(workflow_inputs)
 
         # 🆕 读取工作流的 input_config，根据字段定义补充缺失参数
         try:
