@@ -418,6 +418,34 @@ class Settings(BaseSettings):
     # 分析师工具调用轮次上限（达到后分析师从已有数据强制写报告）
     ANALYST_MAX_TOOL_CALLS: int = Field(default=3, ge=1, le=50, description="分析师最大工具调用轮次")
 
+    # ===== 实盘交易执行配置（默认全部关闭，实盘上线前必须在 .env 显式开启）=====
+    # 总开关：默认 False——不开启时交易核心只做信号记录与 DryRun（模拟撮合），
+    # 绝不会发出任何真实委托
+    LIVE_TRADING_ENABLED: bool = Field(default=False, description="实盘交易总开关（默认关闭，仅信号记录/DryRun）")
+    # 模式：signal_only（只记录信号）/ dry_run（模拟撮合成交）/ live（真实委托）
+    # live 模式还需要 TRADING_BROKER 配置；当前仅实现 dry_run
+    TRADING_MODE: str = Field(default="signal_only", description="交易执行模式: signal_only/dry_run/live")
+    # 风控闸门（任何一道拒绝即不下单）
+    TRADING_MAX_POSITION_PCT: float = Field(default=10.0, ge=0.1, le=100, description="单票最大仓位占比%（占该币种总资产）")
+    TRADING_MAX_ORDER_NOTIONAL: float = Field(default=50000.0, gt=0, description="单笔委托最大金额（按币种本位）")
+    TRADING_MAX_DAILY_ORDERS: int = Field(default=10, ge=1, description="单用户每日最大委托笔数")
+    TRADING_MAX_DAILY_NOTIONAL: float = Field(default=200000.0, gt=0, description="单用户每日最大成交金额（按币种本位）")
+    TRADING_MIN_CONFIDENCE: float = Field(default=0.7, ge=0.0, le=1.0, description="信号最低置信度，低于则拒绝执行")
+    # 允许自动执行的账户（白名单，user_id 列表；为空表示无人可自动执行）
+    TRADING_ALLOWED_USER_IDS: str = Field(default="", description="允许自动交易的 user_id 逗号分隔白名单")
+    # 信号有效期（分钟）：过期信号不执行，避免用陈旧结论交易
+    TRADING_SIGNAL_MAX_AGE_MINUTES: int = Field(default=30, ge=1, le=1440, description="信号有效期（分钟）")
+
+    # ===== QMT 实盘通道配置（仅 TRADING_MODE=live 时使用）=====
+    # QMT 资金账号（券商下发的资金账号，非登录用户名）
+    QMT_ACCOUNT_ID: str = Field(default="", description="QMT实盘资金账号")
+    # 账户类型：STOCK（普通股票账户，A+港美通）
+    QMT_ACCOUNT_TYPE: str = Field(default="STOCK", description="QMT账户类型")
+    # 交易委托轮询间隔（秒）：成交回报同步频率
+    TRADING_ORDER_SYNC_INTERVAL_SECONDS: int = Field(default=10, ge=3, le=300, description="委托状态同步间隔（秒）")
+    # 委托类型：默认限价单（市价单在部分券商柜台不支持）
+    TRADING_QMT_ORDER_TYPE: str = Field(default="LATEST", description="QMT委托价格类型: LATEST(最新价)/FIX(限价)")
+
     # ===== SMTP邮件配置 =====
     SMTP_ENABLED: bool = Field(default=False, description="启用邮件通知功能")
     SMTP_HOST: str = Field(default="smtp.qq.com", description="SMTP服务器地址")

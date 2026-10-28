@@ -339,6 +339,14 @@ class TaskAnalysisService:
                 except Exception as settlement_err:
                     self.logger.warning(f"⚠️ 决策结算记录失败(忽略): {settlement_err}")
 
+            # 🎯 交易信号闭环：分析产出可交易倾向时生成信号并过风控闸门。
+            # 默认 TRADING_MODE=signal_only（只记录不撮合）；全链路失败不影响分析结果。
+            if task.task_type in (AnalysisTaskType.STOCK_ANALYSIS, AnalysisTaskType.ETF_ANALYSIS):
+                try:
+                    await self._process_trading_signal(task, formatted_result)
+                except Exception as trading_err:
+                    self.logger.warning(f"⚠️ 交易信号处理失败(不影响分析): {trading_err}")
+
             # 🔑 关键：更新内存状态为完成（前端轮询依赖此状态）
             from app.services.memory_state_manager import get_memory_state_manager, TaskStatus
             memory_manager = get_memory_state_manager()
@@ -2079,6 +2087,86 @@ class TaskAnalysisService:
         except Exception as e:
             self.logger.error(f"❌ 保存到 analysis_reports 失败: {e}", exc_info=True)
             return None  # 🔑 保存失败时返回 None
+
+    async def _process_trading_signal(self, task: UnifiedAnalysisTask, result: Dict[str, Any]) -> None:
+        """分析完成后处理交易信号：转译 → 风控 → 执行引擎落单。
+
+        安全语义（与 trading_core 的不变量一致）：
+        - LIVE_TRADING_ENABLED=false（默认）：信号最多落 recorded（signal_only 模式）
+          或 pending_confirmation（dry_run 模式，等待人工确认），绝不撮合成交，
+          更不会发出真实委托
+        - 结论为中性/待复核不产生信号；无参考价/无现金时转译失败，只记日志
+        - 全链路失败被外层捕获，不影响分析任务本身
+        """
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        symbol = str((task.task_params or {}).get("symbol")
+                     or (task.task_params or {}).get("stock_code") or "").strip()
+        if not symbol:
+            return
+
+        decision = result.get("decision") or {}
+        action = str(decision.get("action") or decision.get("analysis_view") or "").strip()
+        if action not in ("乐观", "审慎"):
+            self.logger.info(f"🎯 [交易信号] 结论倾向 '{action}'，不产生交易信号")
+            return
+
+        from app.services.trading_core import translate_decision_to_signal, TradingExecutionEngine
+
+        user_id = str(task.user_id)
+        analysis_date = str(
+            result.get("analysis_date")
+            or (task.task_params or {}).get("analysis_date")
+            or now_tz().strftime("%Y-%m-%d")
+        ).strip()[:10]
+
+        # 查用户模拟账户现金与当前持仓（数量推导与仓位检查都需要）
+        db = self._get_db()
+        acc = await db["paper_accounts"].find_one({"user_id": user_id})
+        cash_by_currency: Dict[str, float] = {}
+        if acc and isinstance(acc.get("cash"), dict):
+            cash_by_currency = {k: float(v) for k, v in acc["cash"].items()}
+        pos = await db["paper_positions"].find_one({"user_id": user_id, "code": symbol})
+        position_quantity = int(pos.get("quantity", 0)) if pos else 0
+
+        signal = translate_decision_to_signal(
+            user_id=user_id,
+            code=symbol,
+            decision=decision,
+            analysis_date=analysis_date,
+            cash_by_currency=cash_by_currency,
+            position_quantity=position_quantity,
+            task_id=str(task.task_id),
+            analysis_id=str(result.get("analysis_id") or ""),
+        )
+        if signal is None:
+            self.logger.info(f"🎯 [交易信号] {symbol} 未产生信号（无持仓卖出/倾向不可交易）")
+            return
+
+        # 信号落档（无论后续风控结果如何，先记录）
+        await db["trading_signals"].insert_one(signal.to_dict())
+        self.logger.info(
+            f"🎯 [交易信号] {symbol}: {signal.side} x{signal.quantity} "
+            f"@参考价 {signal.reference_price or 'N/A'}（置信度 {signal.confidence:.2f}，"
+            f"模式 {settings.TRADING_MODE}）"
+        )
+
+        engine = TradingExecutionEngine(db)
+        outcome = await engine.execute_signal(signal, require_confirmation=True)
+        self.logger.info(f"🎯 [交易信号] 执行结果: {outcome.get('status')}")
+        if outcome.get("status") == "risk_rejected":
+            self.logger.warning(
+                f"🎯 [交易信号] 风控拒绝: {outcome.get('risk', {}).get('rejections')}"
+            )
+
+    def _get_db(self):
+        """惰性获取 Mongo db（分析服务持有实例）。"""
+        if getattr(self, "db", None) is None:
+            from app.core.database import get_mongo_db
+
+            self.db = get_mongo_db()
+        return self.db
 
     def _record_decision_for_settlement(self, task: UnifiedAnalysisTask, result: Dict[str, Any]) -> None:
         """把股票/ETF分析的研究结论记入决策日志，供持有窗口走出后结算评分。

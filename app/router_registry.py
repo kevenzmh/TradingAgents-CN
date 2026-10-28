@@ -71,6 +71,7 @@ from app.routers import baostock_init
 from app.routers import system_config as system_config_router
 from app.routers import update as update_router
 from app.routers import decision_settlement as decision_settlement_router
+from app.routers import trading as trading_router
 from app.routers import capability_index as capability_index_router
 from app.routers import quality_metrics as quality_metrics_router
 from app.routers import unified_tasks as unified_tasks_router
@@ -141,6 +142,8 @@ COMMUNITY_ROUTERS = [
     (skills_router.router, "skills", {"tags": ["skills"]}),
     # 决策结算闭环（社区版）：状态查询 / 手动结算 / 历史教训查看
     (decision_settlement_router.router, "decision_settlement", {"tags": ["decision-settlement"]}),
+    # 交易核心（实盘通道）：信号/订单/确认/风控/kill switch
+    (trading_router.router, "trading", {"tags": ["trading"]}),
     (skill_generation_router.router, "skill_generation", {"tags": ["skill-generation"]}),
     (skill_gaps_router.router, "skill_gaps", {"tags": ["skill-gaps"]}),
     (skill_center_router.router, "skill_center", {"tags": ["skill-center"]}),

@@ -1006,6 +1006,54 @@ async def lifespan(app: FastAPI):
                 f"📜 决策结算定时任务已配置（CRON: {settings.DECISION_SETTLEMENT_CRON}）"
             )
 
+        # 实盘委托回报同步：live 模式且总开关开启时，盘中轮询成交回报推进订单状态
+        if settings.LIVE_TRADING_ENABLED and settings.TRADING_MODE == "live":
+            from app.services.trading_core.qmt_live import validate_qmt_live_readiness
+            readiness = validate_qmt_live_readiness()
+            if readiness.get("ready"):
+                async def _sync_qmt_orders_job():
+                    try:
+                        from app.core.database import get_mongo_db as _tdb
+                        from app.services.trading_core.qmt_live import QMTLiveAdapter
+                        from app.services.trading_core.sync import QMTOrderSyncService
+
+                        svc = QMTOrderSyncService(_tdb())
+                        result = await svc.sync_once(QMTLiveAdapter())
+                        if result.get("updated"):
+                            logger.info(
+                                "[实盘同步] 更新 %d 笔订单（在途 %d）",
+                                result["updated"], result["still_open"],
+                            )
+                        for err in result.get("errors", [])[:5]:
+                            logger.warning(f"[实盘同步] {err}")
+                        # 每轮同步后跑对账，超时未终态的委托 exposing in 日志
+                        stale = await svc.reconcile(QMTLiveAdapter())
+                        if stale.get("stale_count"):
+                            logger.warning(
+                                "[实盘对账] %d 笔委托长时间未终态，需人工核查",
+                                stale["stale_count"],
+                            )
+                    except Exception as _e:
+                        logger.warning(f"[实盘同步] 失败(忽略本轮): {_e}")
+
+                scheduler.add_job(
+                    _sync_qmt_orders_job,
+                    IntervalTrigger(seconds=settings.TRADING_ORDER_SYNC_INTERVAL_SECONDS,
+                                    timezone=settings.TIMEZONE),
+                    id="qmt_order_sync",
+                    name="实盘委托回报同步",
+                    max_instances=1,
+                    coalesce=True,
+                )
+                logger.info(
+                    f"🎯 实盘委托回报同步已配置（每 {settings.TRADING_ORDER_SYNC_INTERVAL_SECONDS}s）"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ 实盘模式已开启但 QMT 通道自检未通过，交易执行将拒绝委托: "
+                    f"{readiness.get('problems')}"
+                )
+
         scheduler.add_job(
             _expire_stale_skill_reviews,
             IntervalTrigger(minutes=30, timezone=settings.TIMEZONE),
