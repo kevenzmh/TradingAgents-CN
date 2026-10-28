@@ -42,6 +42,32 @@ _current_analysis_data_source: contextvars.ContextVar[Optional[str]] = contextva
     'current_analysis_data_source', default=None
 )
 
+# 本次分析运行的分析日期（point-in-time 钳制的权威来源）。
+# 由工作流引擎在分析启动时写入；带日期的数据工具读取它，把模型
+# 请求的日期钳制到这一天，防止历史回放读到"未来"数据。
+_current_analysis_date: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'current_analysis_date', default=None
+)
+
+
+def set_current_analysis_date(analysis_date: Optional[str]) -> contextvars.Token:
+    """设置当前分析的分析日期（YYYY-MM-DD）。"""
+    normalized = None
+    if isinstance(analysis_date, str):
+        text = analysis_date.strip()[:10]
+        normalized = text or None
+    return _current_analysis_date.set(normalized)
+
+
+def reset_current_analysis_date(token: contextvars.Token) -> None:
+    """重置当前分析日期。"""
+    _current_analysis_date.reset(token)
+
+
+def get_current_analysis_date() -> Optional[str]:
+    """获取当前分析日期（未设置返回 None = 不做 point-in-time 钳制）。"""
+    return _current_analysis_date.get()
+
 
 def set_current_user_id(user_id: str) -> contextvars.Token:
     """设置当前用户 ID

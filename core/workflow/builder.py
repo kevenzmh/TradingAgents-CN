@@ -235,6 +235,31 @@ def _get_analyst_max_tool_calls() -> int:
         return 3
 
 
+def _env_temperature_override(temperature: float) -> float:
+    """环境变量 TRADINGAGENTS_TEMPERATURE 覆盖采样温度（复现性基建）。
+
+    优先级最高（用户显式环境变量 > DB 模型配置），用 unset 哨兵区分
+    "未设置"与"设置为 0"——`or` 链会把合法的 0.0 温度吞掉。
+    """
+    import os as _os
+
+    raw = _os.getenv("TRADINGAGENTS_TEMPERATURE")
+    if raw is None or raw.strip() == "":
+        return temperature
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("[依赖提供者] TRADINGAGENTS_TEMPERATURE=%r 非法，忽略", raw)
+        return temperature
+    import math as _math
+
+    if _math.isnan(value) or _math.isinf(value) or value < 0 or value > 2:
+        logger.warning("[依赖提供者] TRADINGAGENTS_TEMPERATURE=%s 超出 [0,2]，忽略", raw)
+        return temperature
+    logger.info("[依赖提供者] TRADINGAGENTS_TEMPERATURE=%s 覆盖采样温度（原 %s）", value, temperature)
+    return value
+
+
 class LegacyDependencyProvider:
     """
     遗留智能体依赖提供者
@@ -436,7 +461,9 @@ class LegacyDependencyProvider:
                 provider=quick_provider,
                 model=quick_model,
                 backend_url=quick_url,
-                temperature=self._config.get("quick_temperature") or quick_db_cfg.get("temperature", 0.1),
+                temperature=_env_temperature_override(
+                    self._config.get("quick_temperature") or quick_db_cfg.get("temperature", 0.1)
+                ),
                 max_tokens=quick_max_tokens,
                 timeout=self._config.get("quick_timeout") or quick_db_cfg.get("timeout", 60),
                 api_key=quick_api_key,
@@ -448,7 +475,9 @@ class LegacyDependencyProvider:
                 provider=deep_provider,
                 model=deep_model,
                 backend_url=deep_url,
-                temperature=self._config.get("deep_temperature") or deep_db_cfg.get("temperature", 0.1),
+                temperature=_env_temperature_override(
+                    self._config.get("deep_temperature") or deep_db_cfg.get("temperature", 0.1)
+                ),
                 max_tokens=deep_max_tokens,
                 timeout=self._config.get("deep_timeout") or deep_db_cfg.get("timeout", 120),
                 api_key=deep_api_key,

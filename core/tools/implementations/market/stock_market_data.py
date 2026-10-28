@@ -308,6 +308,22 @@ def get_stock_market_data_unified(
     if original_ticker != ticker:
         logger.info(f"📈 [统一市场工具] 标准化股票代码: {original_ticker} -> {ticker}")
 
+    # Point-in-time：模型给的日期窗口被钳制到分析日，倒置窗口直接报错送回
+    # 模型纠正（上游 #1220/#1476/#1595）
+    from tradingagents.dataflows.date_window import DateWindowError, as_of_window
+    from core.tools.context import get_current_analysis_date
+
+    _run_analysis_date = get_current_analysis_date()
+    if _run_analysis_date:
+        try:
+            start_date, end_date = as_of_window(start_date, end_date, _run_analysis_date)
+        except DateWindowError as _dw_err:
+            return (
+                f"⚠️ 日期参数错误，请修正后重试：{_dw_err}\n"
+                f"提示：start_date 不能晚于 end_date，且日期需为 YYYY-MM-DD 格式；"
+                f"本次分析日期为 {_run_analysis_date}，请求的日期窗口不能晚于它。"
+            )
+
     logger.info(f"📈 [统一市场工具] 分析股票: {ticker}")
 
     try:

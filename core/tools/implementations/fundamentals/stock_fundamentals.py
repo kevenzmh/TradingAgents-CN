@@ -704,28 +704,51 @@ def get_stock_fundamentals_unified(
                 "- 估值快照口径: PE、PE(TTM)、PB、PS(TTM) 等估值指标如被表述为“当前值”，均指对应指标最近可得且有效的交易日快照，而非实时盘口价格。\n"
                 "- 历史估值分位部分如已在指标后附带日期，该日期就是该指标本次采用的估值快照日期；若不同指标日期不同，不默认视为同一交易日。"
             )
-            stable_curr_date = apply_stable_data_cutoff(curr_date)
+            # Point-in-time（上游 #1300）：分析日期以工作流上下文为权威来源，模型
+            # 给的 curr_date 被钳制到它。分析日早于今天 = 历史回放，此时实时估值
+            # 通道（market_quotes 实时价 → 动态 PE/PB/总市值，以及由它们推导的
+            # 估值评分与"估值水平"结论）整体扣留并显式声明——报告中的"最新"财务
+            # 比率同样是当下口径，随通道一并扣留；tushare daily_basic 按日快照有
+            # 真实 vintage，不在此列，照常提供（见下方历史估值分位）。
+            from tradingagents.dataflows.date_window import as_of, canonical_date, withhold_live_snapshot
+            from core.tools.context import get_current_analysis_date
+
+            effective_as_of = as_of(curr_date, get_current_analysis_date() or "")
+            if canonical_date(effective_as_of or "") is None:
+                effective_as_of = None  # 日期不可解析：不做 point-in-time 判定，维持旧行为
+
+            stable_curr_date = apply_stable_data_cutoff(effective_as_of or curr_date)
             stable_note = build_stable_data_cutoff_note(
-                curr_date,
+                effective_as_of or curr_date,
                 stable_curr_date,
                 subject="估值分析所需的当日收盘后日频数据",
             )
             if stable_note:
                 result_data.append(f"## A股数据日期说明\n- {stable_note}")
 
-            try:
-                # 获取基本面财务数据
-                from tradingagents.dataflows.optimized_china_data import OptimizedChinaDataProvider
-                analyzer = OptimizedChinaDataProvider()
-                fundamentals_data = analyzer._generate_fundamentals_report(normalized_ticker, company_profile_data, "standard")
-                fundamentals_data = _strip_realtime_snapshot_fields(fundamentals_data)
-                result_data.append(f"## A股基本面财务数据\n{fundamentals_data}")
-            except Exception as e:
-                logger.error(f"❌ A股基本面数据获取失败: {e}")
-                result_data.append(f"## A股基本面财务数据\n获取失败: {e}")
+            withheld_snapshot = withhold_live_snapshot(
+                effective_as_of,
+                f"{normalized_ticker} 实时估值快照（实时价、PE/PB/总市值、估值评分）",
+            )
+            if withheld_snapshot:
+                logger.info(
+                    f"🔒 [统一基本面工具] 分析日 {effective_as_of} 早于今天，实时估值通道按 point-in-time 规则扣留"
+                )
+                result_data.append(f"## A股基本面财务数据\n{withheld_snapshot}")
+            else:
+                try:
+                    # 获取基本面财务数据
+                    from tradingagents.dataflows.optimized_china_data import OptimizedChinaDataProvider
+                    analyzer = OptimizedChinaDataProvider()
+                    fundamentals_data = analyzer._generate_fundamentals_report(normalized_ticker, company_profile_data, "standard")
+                    fundamentals_data = _strip_realtime_snapshot_fields(fundamentals_data)
+                    result_data.append(f"## A股基本面财务数据\n{fundamentals_data}")
+                except Exception as e:
+                    logger.error(f"❌ A股基本面数据获取失败: {e}")
+                    result_data.append(f"## A股基本面财务数据\n获取失败: {e}")
 
             try:
-                historical_valuation = _get_historical_valuation_summary(normalized_ticker, curr_date)
+                historical_valuation = _get_historical_valuation_summary(normalized_ticker, effective_as_of or curr_date)
                 result_data.append(f"## A股历史估值分位\n{historical_valuation}")
             except Exception as e:
                 logger.error(f"❌ A股历史估值分位获取失败: {e}")
@@ -770,7 +793,7 @@ def get_stock_fundamentals_unified(
 
 **股票类型**: {market_info['market_name']}
 **货币**: {market_info['currency_name']} ({market_info['currency_symbol']})
-**分析日期**: {curr_date}
+**分析日期**: {effective_as_of or curr_date}
 
 {chr(10).join(result_data)}
 

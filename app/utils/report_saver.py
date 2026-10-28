@@ -159,7 +159,8 @@ async def save_analysis_report(
     engine: str = "v2",
     user_id: Optional[str] = None,
     performance_metrics: Dict[str, Any] = None,
-    task_type: Optional[str] = None
+    task_type: Optional[str] = None,
+    run_settings: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     保存分析报告到 analysis_reports 集合（统一方法）
@@ -217,6 +218,11 @@ async def save_analysis_report(
 
         # 🔥 关键字段：decision
         "decision": decision,
+
+        # 🆕 运行设置快照（上游 #752）：本报告由什么配置产出——
+        # provider/模型/温度/辩论轮数/分析师清单。每笔交易信号的源头
+        # 报告要能回答"当时用什么配置跑的"（实盘审计链）
+        "run_settings": run_settings or {},
 
         # 元数据
         "created_at": timestamp,

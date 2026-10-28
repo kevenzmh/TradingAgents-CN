@@ -186,15 +186,42 @@ def _normalize_analysis_date(curr_date: str) -> str:
 
 
 def _build_a_share_news_window(curr_date: str) -> Tuple[datetime, datetime, str, str]:
-    """构建 A 股新闻查询时间窗口，默认覆盖分析日往前 7 个自然日。"""
-    analysis_date_str = _normalize_analysis_date(curr_date)
-    analysis_date = datetime.strptime(analysis_date_str, "%Y-%m-%d")
-    start_date = datetime.combine(
-        (analysis_date - timedelta(days=A_SHARE_NEWS_LOOKBACK_DAYS - 1)).date(),
-        time.min,
+    """构建 A 股新闻查询时间窗口，默认覆盖分析日往前 7 个自然日。
+
+    Point-in-time：以 contextvar 中的分析日为权威日期——模型传入的
+    curr_date 晚于分析日（或不可解析）时被钳制回分析日，历史回放
+    绝不读到"未来新闻"（上游 #1220）。graph 外直接调用（无分析日）
+    时以模型传入的日期为准，保持原有行为。
+    """
+    from tradingagents.dataflows.date_window import (
+        DateWindowError,
+        as_of_window,
+        canonical_date,
+        window_bounds,
     )
-    end_date = datetime.combine(analysis_date.date(), time.max)
-    return start_date, end_date, start_date.strftime("%Y-%m-%d"), analysis_date_str
+    from core.tools.context import get_current_analysis_date
+
+    _run_analysis_date = get_current_analysis_date()
+    _requested = canonical_date(_normalize_analysis_date(curr_date))
+    if _run_analysis_date and (_requested is None or _requested > _run_analysis_date):
+        logger.info(
+            f"📰 [新闻窗口] 请求日期 {curr_date} 钳制到分析日期 {_run_analysis_date}"
+        )
+        effective = _run_analysis_date
+    else:
+        effective = _requested or _normalize_analysis_date(curr_date)[:10]
+
+    lookback_start = (
+        datetime.strptime(effective, "%Y-%m-%d") - timedelta(days=A_SHARE_NEWS_LOOKBACK_DAYS - 1)
+    ).strftime("%Y-%m-%d")
+    try:
+        start_s, end_s = as_of_window(lookback_start, effective, effective)
+        start_date, end_date = window_bounds(start_s, end_s)
+    except DateWindowError:
+        # 兜底：窗口非法时退回分析日单日
+        start_date, end_date = window_bounds(effective, effective)
+        start_s, end_s = effective, effective
+    return start_date, end_date, start_s, end_s
 
 
 def _normalize_a_share_symbol(ticker: str) -> str:
@@ -492,6 +519,12 @@ def _filter_news_by_date_range(
     for news in news_list:
         publish_time = _parse_publish_time(news.get("publish_time"))
         if publish_time is None:
+            # 无日期条目：按上游 #1126 语义处理——回测无法证明一条无日期
+            # 的消息不是未来发生的，只有窗口抵达当下时才保留
+            from tradingagents.dataflows.date_window import in_window
+
+            if in_window(None, start_date, end_date):
+                filtered_news.append(news)
             continue
         if start_date <= publish_time <= end_date:
             filtered_news.append(news)
@@ -1790,6 +1823,19 @@ def get_stock_news_unified(
     """
     logger.info(f"📰 [统一新闻工具] 分析股票: {ticker}")
 
+    # Point-in-time：curr_date 钳制到本次运行的分析日期——模型传入更晚的
+    # 日期（或"今天"）不能越过分析日读到未来新闻（上游 #1220）
+    from tradingagents.dataflows.date_window import canonical_date
+    from core.tools.context import get_current_analysis_date
+
+    _run_analysis_date = get_current_analysis_date()
+    _requested_date = canonical_date(curr_date)
+    if _run_analysis_date and (_requested_date is None or _requested_date > _run_analysis_date):
+        logger.info(
+            f"📰 [统一新闻工具] 请求日期 {curr_date} 被钳制到分析日期 {_run_analysis_date}"
+        )
+        curr_date = _run_analysis_date
+
     try:
         from tradingagents.utils.stock_utils import StockUtils
 
@@ -1961,7 +2007,22 @@ def get_stock_news_unified(
                 logger.error(f"❌ Google新闻获取异常: {google_e}")
 
         if not result_data:
-            result_data.append("## 新闻结果\n当前未获取到可用新闻数据。")
+            # Coverage gap：历史日期窗口查无新闻 ≠ 当时没有新闻——实时源
+            # 只服务最近条目，覆盖不到旧窗口。声明这一点，分析师才不会把
+            # "看不到"当"没有"（上游 coverage_gap 语义）
+            from tradingagents.dataflows import date_window as dw
+
+            gap_note = dw.coverage_gap(
+                dates=[],  # 空结果：无任何条目可估覆盖
+                start_date=start_date_str,
+                end_date=end_date_str,
+                source="新闻数据源（数据库缓存与实时链路）",
+                subject="新闻",
+            )
+            if gap_note:
+                result_data.append(f"## 新闻结果\n{gap_note}")
+            else:
+                result_data.append("## 新闻结果\n当前未获取到可用新闻数据。")
 
         # 组合所有数据
         combined_result = f"""# {ticker} 新闻分析

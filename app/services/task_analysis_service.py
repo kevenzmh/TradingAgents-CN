@@ -2079,6 +2079,7 @@ class TaskAnalysisService:
                 user_id=str(task.user_id) if task.user_id else None,
                 performance_metrics=result.get("performance_metrics", {}),
                 task_type=str(task.task_type),
+                run_settings=self._build_run_settings(task, result),
             )
 
             self.logger.info(f"✅ 分析结果已保存到 analysis_reports: analysis_id={analysis_id}, task_id={task.task_id}")
@@ -2167,6 +2168,51 @@ class TaskAnalysisService:
 
             self.db = get_mongo_db()
         return self.db
+
+    @staticmethod
+    def _build_run_settings(task: UnifiedAnalysisTask, result: Dict[str, Any]) -> Dict[str, Any]:
+        """运行设置快照（上游 #752）：报告产出的完整配置留档。
+
+        实盘审计链要求每笔交易信号能溯源到"当时用什么配置跑的分析"。
+        字段缺省时留 None 而非猜值——宁可缺项不记错值。
+        """
+        import os
+
+        params = task.task_params or {}
+        settings_snapshot = {
+            "quick_model": params.get("quick_analysis_model"),
+            "deep_model": params.get("deep_analysis_model"),
+            "model_info": result.get("model_info"),
+            "research_depth": result.get("research_depth") or params.get("research_depth"),
+            "analysts": result.get("analysts") or params.get("selected_analysts") or [],
+            "max_debate_rounds": params.get("max_debate_rounds"),
+            "lookback_days": params.get("lookback_days"),
+            "preference_type": getattr(task, "preference_type", None),
+            "engine_type": getattr(task, "engine_type", None),
+            "workflow_id": getattr(task, "workflow_id", None),
+            # 复现性：环境覆盖项与版本（上游 Reproducibility 章节的精神）
+            "temperature_env_override": os.getenv("TRADINGAGENTS_TEMPERATURE"),
+            "analyst_max_tool_calls": os.getenv("AGENT_MAX_TOOL_CALLS"),
+            "app_version": None,
+        }
+        try:
+            from app.core.config import settings as app_settings
+
+            settings_snapshot["engine_mode"] = getattr(app_settings, "TRADING_MODE", None)
+            settings_snapshot["live_trading_enabled"] = getattr(app_settings, "LIVE_TRADING_ENABLED", False)
+        except Exception:
+            pass
+        try:
+            version_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "VERSION",
+            )
+            if os.path.exists(version_path):
+                with open(version_path, "r", encoding="utf-8") as f:
+                    settings_snapshot["app_version"] = f.read().strip()[:40]
+        except Exception:
+            pass
+        return {k: v for k, v in settings_snapshot.items() if v is not None}
 
     def _record_decision_for_settlement(self, task: UnifiedAnalysisTask, result: Dict[str, Any]) -> None:
         """把股票/ETF分析的研究结论记入决策日志，供持有窗口走出后结算评分。

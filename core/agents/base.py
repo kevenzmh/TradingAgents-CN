@@ -1265,218 +1265,232 @@ class BaseAgent(ABC):
         current_state = getattr(self, "_current_state", None)
         analysis_data_source = None
         analysis_id = None
+        analysis_date_for_tools = None
         if isinstance(current_state, dict):
             value = current_state.get("_analysis_data_source")
             if isinstance(value, str) and value.strip():
                 analysis_data_source = value.strip().lower()
             analysis_id = current_state.get("analysis_id") or current_state.get("task_id")
+            # Point-in-time：分析日期进 contextvar，带日期的数据工具据此
+            # 钳制模型请求的日期（上游 #1220：模型传"今天"不能越过分析日）
+            date_value = current_state.get("analysis_date") or current_state.get("trade_date")
+            if isinstance(date_value, str) and len(date_value.strip()) >= 10:
+                analysis_date_for_tools = date_value.strip()[:10]
 
-        for tool_call in tool_calls:
-            tool_name = tool_call.get('name')
-            tool_args = tool_call.get('args', {})
-            tool_id = tool_call.get('id')
+        from core.tools.context import set_current_analysis_date
 
-            # 兼容历史/异常的工具调用格式：LLM 偶发把真实参数包在嵌套的
-            # "kwargs" 里（见 core/llm/tool_normalizer.py 的同一解包逻辑）
-            if isinstance(tool_args, dict):
-                nested_kwargs = tool_args.get("kwargs")
-                if isinstance(nested_kwargs, dict):
-                    tool_args = {
-                        **nested_kwargs,
-                        **{k: v for k, v in tool_args.items() if k != "kwargs"},
-                    }
-                    logger.info(
-                        f"🔧 [{self.agent_id}] 检测到嵌套 kwargs 参数，已解包: {list(tool_args.keys())}"
-                    )
-                # 股票代码规范化为引擎统一的无后缀格式（002594.SZ → 002594），
-                # 与 core/llm/tool_normalizer.py 的 normalize_ticker_for_engine 一致
-                from core.llm.tool_normalizer import normalize_ticker_for_engine
+        date_token = set_current_analysis_date(analysis_date_for_tools)
+        try:
 
-                for key in ('ticker', 'symbol'):
-                    if key in tool_args and tool_args[key]:
-                        tool_args[key] = normalize_ticker_for_engine(str(tool_args[key]))
+            for tool_call in tool_calls:
+                tool_name = tool_call.get('name')
+                tool_args = tool_call.get('args', {})
+                tool_id = tool_call.get('id')
 
-            logger.info(f"🔧 [{self.agent_id}] 执行工具: {tool_name}")
-            logger.info(f"🔧 [{self.agent_id}] 工具参数: {tool_args}")
+                # 兼容历史/异常的工具调用格式：LLM 偶发把真实参数包在嵌套的
+                # "kwargs" 里（见 core/llm/tool_normalizer.py 的同一解包逻辑）
+                if isinstance(tool_args, dict):
+                    nested_kwargs = tool_args.get("kwargs")
+                    if isinstance(nested_kwargs, dict):
+                        tool_args = {
+                            **nested_kwargs,
+                            **{k: v for k, v in tool_args.items() if k != "kwargs"},
+                        }
+                        logger.info(
+                            f"🔧 [{self.agent_id}] 检测到嵌套 kwargs 参数，已解包: {list(tool_args.keys())}"
+                        )
+                    # 股票代码规范化为引擎统一的无后缀格式（002594.SZ → 002594），
+                    # 与 core/llm/tool_normalizer.py 的 normalize_ticker_for_engine 一致
+                    from core.llm.tool_normalizer import normalize_ticker_for_engine
 
-            # 找到对应的工具并执行
-            tool_result = None
-            _tool_success = True
-            _tool_error = None
-            for tool in self._langchain_tools:
-                if hasattr(tool, 'name') and tool.name == tool_name:
-                    _exec_start = time.time()
-                    try:
-                        logger.info(f"🔄 [{self.agent_id}] 开始调用工具 {tool_name}...")
-                        logger.debug(f"🔍 [{self.agent_id}] 工具类型: {type(tool)}")
-                        logger.debug(f"🔍 [{self.agent_id}] 工具 func: {getattr(tool, 'func', 'N/A')}")
-                        source_token = set_current_analysis_data_source(analysis_data_source)
+                    for key in ('ticker', 'symbol'):
+                        if key in tool_args and tool_args[key]:
+                            tool_args[key] = normalize_ticker_for_engine(str(tool_args[key]))
+
+                logger.info(f"🔧 [{self.agent_id}] 执行工具: {tool_name}")
+                logger.info(f"🔧 [{self.agent_id}] 工具参数: {tool_args}")
+
+                # 找到对应的工具并执行
+                tool_result = None
+                _tool_success = True
+                _tool_error = None
+                for tool in self._langchain_tools:
+                    if hasattr(tool, 'name') and tool.name == tool_name:
+                        _exec_start = time.time()
                         try:
-                            tool_result = tool.invoke(tool_args)
-                        finally:
-                            reset_current_analysis_data_source(source_token)
-                        
-                        # 🔥 检查返回的是否是协程对象（修复异步函数问题）
-                        import asyncio
-                        if asyncio.iscoroutine(tool_result):
-                            logger.warning(f"⚠️ [{self.agent_id}] 工具 {tool_name} 返回协程对象，尝试等待完成...")
+                            logger.info(f"🔄 [{self.agent_id}] 开始调用工具 {tool_name}...")
+                            logger.debug(f"🔍 [{self.agent_id}] 工具类型: {type(tool)}")
+                            logger.debug(f"🔍 [{self.agent_id}] 工具 func: {getattr(tool, 'func', 'N/A')}")
+                            source_token = set_current_analysis_data_source(analysis_data_source)
                             try:
-                                # 尝试获取事件循环并等待协程
-                                loop = asyncio.get_event_loop()
-                                if loop.is_running():
-                                    # 如果事件循环正在运行，需要在新线程中运行
-                                    import threading
-                                    result_container = {}
-                                    exception_container = {}
+                                tool_result = tool.invoke(tool_args)
+                            finally:
+                                reset_current_analysis_data_source(source_token)
+                        
+                            # 🔥 检查返回的是否是协程对象（修复异步函数问题）
+                            import asyncio
+                            if asyncio.iscoroutine(tool_result):
+                                logger.warning(f"⚠️ [{self.agent_id}] 工具 {tool_name} 返回协程对象，尝试等待完成...")
+                                try:
+                                    # 尝试获取事件循环并等待协程
+                                    loop = asyncio.get_event_loop()
+                                    if loop.is_running():
+                                        # 如果事件循环正在运行，需要在新线程中运行
+                                        import threading
+                                        result_container = {}
+                                        exception_container = {}
                                     
-                                    def run_coroutine():
-                                        try:
-                                            new_loop = asyncio.new_event_loop()
-                                            asyncio.set_event_loop(new_loop)
-                                            result_container['value'] = new_loop.run_until_complete(tool_result)
-                                            new_loop.close()
-                                        except Exception as e:
-                                            exception_container['value'] = e
+                                        def run_coroutine():
+                                            try:
+                                                new_loop = asyncio.new_event_loop()
+                                                asyncio.set_event_loop(new_loop)
+                                                result_container['value'] = new_loop.run_until_complete(tool_result)
+                                                new_loop.close()
+                                            except Exception as e:
+                                                exception_container['value'] = e
                                     
-                                    thread = threading.Thread(target=run_coroutine, daemon=True)
-                                    thread.start()
-                                    thread.join(timeout=30)  # 30秒超时
+                                        thread = threading.Thread(target=run_coroutine, daemon=True)
+                                        thread.start()
+                                        thread.join(timeout=30)  # 30秒超时
                                     
-                                    if thread.is_alive():
-                                        raise TimeoutError("工具协程执行超时")
-                                    if 'value' in exception_container:
-                                        raise exception_container['value']
-                                    tool_result = result_container.get('value')
-                                else:
-                                    tool_result = loop.run_until_complete(tool_result)
-                            except RuntimeError:
-                                # 没有事件循环，创建新的
-                                tool_result = asyncio.run(tool_result)
-                            logger.info(f"✅ [{self.agent_id}] 协程执行完成，结果类型: {type(tool_result).__name__}")
+                                        if thread.is_alive():
+                                            raise TimeoutError("工具协程执行超时")
+                                        if 'value' in exception_container:
+                                            raise exception_container['value']
+                                        tool_result = result_container.get('value')
+                                    else:
+                                        tool_result = loop.run_until_complete(tool_result)
+                                except RuntimeError:
+                                    # 没有事件循环，创建新的
+                                    tool_result = asyncio.run(tool_result)
+                                logger.info(f"✅ [{self.agent_id}] 协程执行完成，结果类型: {type(tool_result).__name__}")
 
-                        # 记录工具返回结果的详细信息
-                        if isinstance(tool_result, str):
-                            result_preview = tool_result[:200] + "..." if len(tool_result) > 200 else tool_result
-                            logger.info(f"✅ [{self.agent_id}] 工具 {tool_name} 执行成功，返回长度: {len(tool_result)} 字符")
-                            logger.info(f"📄 [{self.agent_id}] 工具 {tool_name} 返回预览: {result_preview}")
-                        else:
-                            logger.info(f"✅ [{self.agent_id}] 工具 {tool_name} 执行成功，返回类型: {type(tool_result).__name__}")
-                            logger.info(f"📄 [{self.agent_id}] 工具 {tool_name} 返回内容: {str(tool_result)[:200]}...")
+                            # 记录工具返回结果的详细信息
+                            if isinstance(tool_result, str):
+                                result_preview = tool_result[:200] + "..." if len(tool_result) > 200 else tool_result
+                                logger.info(f"✅ [{self.agent_id}] 工具 {tool_name} 执行成功，返回长度: {len(tool_result)} 字符")
+                                logger.info(f"📄 [{self.agent_id}] 工具 {tool_name} 返回预览: {result_preview}")
+                            else:
+                                logger.info(f"✅ [{self.agent_id}] 工具 {tool_name} 执行成功，返回类型: {type(tool_result).__name__}")
+                                logger.info(f"📄 [{self.agent_id}] 工具 {tool_name} 返回内容: {str(tool_result)[:200]}...")
 
-                        # 记录到工具执行日志
-                        _exec_ms = int((time.time() - _exec_start) * 1000)
-                        try:
-                            from core.tools.execution_logger import get_tool_execution_logger
-                            get_tool_execution_logger().log(
-                                tool_id=tool_name,
-                                agent_id=self.agent_id,
-                                tool_args=tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
-                                result=tool_result,
-                                success=True,
-                                execution_time_ms=_exec_ms,
-                                analysis_id=analysis_id,
-                            )
-                        except Exception:
-                            pass  # 日志记录失败不影响主流程
+                            # 记录到工具执行日志
+                            _exec_ms = int((time.time() - _exec_start) * 1000)
+                            try:
+                                from core.tools.execution_logger import get_tool_execution_logger
+                                get_tool_execution_logger().log(
+                                    tool_id=tool_name,
+                                    agent_id=self.agent_id,
+                                    tool_args=tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
+                                    result=tool_result,
+                                    success=True,
+                                    execution_time_ms=_exec_ms,
+                                    analysis_id=analysis_id,
+                                )
+                            except Exception:
+                                pass  # 日志记录失败不影响主流程
 
-                    except Exception as e:
-                        logger.error(f"❌ [{self.agent_id}] 工具 {tool_name} 执行失败: {e}")
-                        import traceback
-                        logger.error(f"❌ [{self.agent_id}] 工具 {tool_name} 错误详情: {traceback.format_exc()}")
-                        tool_result = f"工具执行失败: {str(e)}"
-                        _tool_success = False
-                        _tool_error = str(e)
+                        except Exception as e:
+                            logger.error(f"❌ [{self.agent_id}] 工具 {tool_name} 执行失败: {e}")
+                            import traceback
+                            logger.error(f"❌ [{self.agent_id}] 工具 {tool_name} 错误详情: {traceback.format_exc()}")
+                            tool_result = f"工具执行失败: {str(e)}"
+                            _tool_success = False
+                            _tool_error = str(e)
 
-                        # 记录失败日志
-                        _exec_ms = int((time.time() - _exec_start) * 1000)
-                        try:
-                            from core.tools.execution_logger import get_tool_execution_logger
-                            get_tool_execution_logger().log(
-                                tool_id=tool_name,
-                                agent_id=self.agent_id,
-                                tool_args=tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
-                                result=None,
-                                success=False,
-                                execution_time_ms=_exec_ms,
-                                analysis_id=analysis_id,
-                                error=str(e),
-                            )
-                        except Exception:
-                            pass
+                            # 记录失败日志
+                            _exec_ms = int((time.time() - _exec_start) * 1000)
+                            try:
+                                from core.tools.execution_logger import get_tool_execution_logger
+                                get_tool_execution_logger().log(
+                                    tool_id=tool_name,
+                                    agent_id=self.agent_id,
+                                    tool_args=tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
+                                    result=None,
+                                    success=False,
+                                    execution_time_ms=_exec_ms,
+                                    analysis_id=analysis_id,
+                                    error=str(e),
+                                )
+                            except Exception:
+                                pass
 
-                        # 上报能力缺口
-                        try:
-                            from core.tools.external.skill_gap_detector import SkillGapDetector
-                            SkillGapDetector.report_gap(
-                                gap_type="tool_execution_error",
-                                tool_name=tool_name,
-                                agent_id=self.agent_id,
-                                error=str(e),
-                                context={
-                                    "tool_call_args": tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
-                                    "analysis_id": analysis_id or "",
-                                },
-                            )
-                        except Exception:
-                            pass
+                            # 上报能力缺口
+                            try:
+                                from core.tools.external.skill_gap_detector import SkillGapDetector
+                                SkillGapDetector.report_gap(
+                                    gap_type="tool_execution_error",
+                                    tool_name=tool_name,
+                                    agent_id=self.agent_id,
+                                    error=str(e),
+                                    context={
+                                        "tool_call_args": tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
+                                        "analysis_id": analysis_id or "",
+                                    },
+                                )
+                            except Exception:
+                                pass
 
-                    break
+                        break
 
-            if tool_result is None:
-                tool_result = f"未找到工具: {tool_name}"
-                logger.warning(f"⚠️ [{self.agent_id}] {tool_result}")
-                logger.warning(f"⚠️ [{self.agent_id}] 可用工具列表: {[t.name for t in self._langchain_tools]}")
-                _tool_success = False
-                _tool_error = "tool_not_found"
+                if tool_result is None:
+                    tool_result = f"未找到工具: {tool_name}"
+                    logger.warning(f"⚠️ [{self.agent_id}] {tool_result}")
+                    logger.warning(f"⚠️ [{self.agent_id}] 可用工具列表: {[t.name for t in self._langchain_tools]}")
+                    _tool_success = False
+                    _tool_error = "tool_not_found"
 
-                # 上报工具缺失缺口
-                try:
-                    from core.tools.external.skill_gap_detector import SkillGapDetector
-                    SkillGapDetector.report_gap(
-                        gap_type="tool_not_found",
-                        tool_name=tool_name,
-                        agent_id=self.agent_id,
-                        error="工具不存在于当前注册表",
-                        context={
-                            "available_tools": [t.name for t in self._langchain_tools],
-                            "analysis_id": analysis_id or "",
-                        },
-                    )
-                except Exception:
-                    pass
+                    # 上报工具缺失缺口
+                    try:
+                        from core.tools.external.skill_gap_detector import SkillGapDetector
+                        SkillGapDetector.report_gap(
+                            gap_type="tool_not_found",
+                            tool_name=tool_name,
+                            agent_id=self.agent_id,
+                            error="工具不存在于当前注册表",
+                            context={
+                                "available_tools": [t.name for t in self._langchain_tools],
+                                "analysis_id": analysis_id or "",
+                            },
+                        )
+                    except Exception:
+                        pass
 
-            # 🆕 收集工具调用摘要
-            _result_str = str(tool_result) if tool_result else ""
-            self._tool_call_summaries_collected.append({
-                "tool_name": tool_name,
-                "tool_args": tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
-                "result_preview": _result_str[:300] + ("..." if len(_result_str) > 300 else ""),
-                "result_length": len(_result_str),
-                "success": _tool_success,
-                "error": _tool_error,
-            })
+                # 🆕 收集工具调用摘要
+                _result_str = str(tool_result) if tool_result else ""
+                self._tool_call_summaries_collected.append({
+                    "tool_name": tool_name,
+                    "tool_args": tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
+                    "result_preview": _result_str[:300] + ("..." if len(_result_str) > 300 else ""),
+                    "result_length": len(_result_str),
+                    "success": _tool_success,
+                    "error": _tool_error,
+                })
 
-            # 🔑 记录工具调用到执行轨迹
-            _recorder = getattr(self, '_execution_recorder', None)
-            if _recorder:
-                try:
-                    _recorder.record_tool_call(
-                        tool_name=tool_name,
-                        tool_args=tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
-                        success=_tool_success,
-                        error=_tool_error,
-                        result_length=len(_result_str),
-                        result_preview=_result_str,
-                    )
-                except Exception:
-                    pass
+                # 🔑 记录工具调用到执行轨迹
+                _recorder = getattr(self, '_execution_recorder', None)
+                if _recorder:
+                    try:
+                        _recorder.record_tool_call(
+                            tool_name=tool_name,
+                            tool_args=tool_args if isinstance(tool_args, dict) else {"value": str(tool_args)},
+                            success=_tool_success,
+                            error=_tool_error,
+                            result_length=len(_result_str),
+                            result_preview=_result_str,
+                        )
+                    except Exception:
+                        pass
 
-            # 创建工具消息
-            tool_messages.append(ToolMessage(
-                content=str(tool_result),
-                tool_call_id=tool_id
-            ))
+                # 创建工具消息
+                tool_messages.append(ToolMessage(
+                    content=str(tool_result),
+                    tool_call_id=tool_id
+                ))
 
+        finally:
+            from core.tools.context import reset_current_analysis_date
+            reset_current_analysis_date(date_token)
         return tool_messages
 
     def _get_prompt_from_template(
