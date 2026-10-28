@@ -24,9 +24,19 @@ _CN_BENCHMARKS = {
 }
 _DEFAULT_BENCHMARK = ("000300.SH", "沪深300")
 
+# 常见宽基 ETF → 跟踪指数（结算用跟踪指数作基准最直观）
+_ETF_TRACKING_INDEXES = {
+    "510300": ("000300.SH", "沪深300"),
+    "510050": ("000016.SH", "上证50"),
+    "510500": ("000905.SH", "中证500"),
+    "159919": ("000300.SH", "沪深300"),
+    "159915": ("399006.SZ", "创业板指"),
+    "159949": ("399987.SZ", "中证1000"),
+}
+
 
 def resolve_benchmark(ticker: str, config: dict = None) -> tuple[str, str]:
-    """返回结算基准的 (代码, 名称)。A股按板块选指数；其他市场暂不支持结算。"""
+    """返回结算基准的 (代码, 名称)。A股/ETF 按板块选指数；其他市场暂不支持结算。"""
     cfg = config or {}
     explicit = cfg.get("benchmark_ticker")
     if explicit:
@@ -36,12 +46,27 @@ def resolve_benchmark(ticker: str, config: dict = None) -> tuple[str, str]:
         # 港股/美股暂无本地基准行情通道，返回空让调用方跳过结算
         return "", ""
     code6 = str(ticker).split(".")[0].zfill(6)
+    if _is_cn_etf(code6):
+        # 宽基/行业 ETF 用其跟踪指数结算最直观；未映射的按普通规则走
+        etf_bench = _ETF_TRACKING_INDEXES.get(code6)
+        if etf_bench:
+            return etf_bench
     bench = _CN_BENCHMARKS.get(code6[:3], _DEFAULT_BENCHMARK)
     return bench
 
 
+# ETF/基金代码前缀（上交所 50/51/52/56/58，深交所 15/16/18），
+# 与 app/services/task_analysis_service.ETF_CODE_PREFIXES 保持一致
+_ETF_CODE_PREFIXES = ("50", "51", "52", "56", "58", "15", "16", "18")
+
+
+def _is_cn_etf(ticker: str) -> bool:
+    code6 = str(ticker).split(".")[0].zfill(6)
+    return len(code6) == 6 and code6.isdigit() and code6.startswith(_ETF_CODE_PREFIXES)
+
+
 def _fetch_stock_closes(ticker: str, start_date: str, end_date: str) -> Optional[pd.Series]:
-    """取 A 股日线收盘价：本地 MongoDB 优先，兜底在线 provider。失败抛异常。"""
+    """取 A 股日线收盘价（含 ETF）：本地 MongoDB 优先，兜底在线 provider。失败抛异常。"""
     code6 = str(ticker).split(".")[0].zfill(6)
 
     from tradingagents.dataflows.cache.mongodb_cache_adapter import get_mongodb_cache_adapter
@@ -156,6 +181,8 @@ def fetch_returns(
     fetch_end = min(end, today + timedelta(days=1)).strftime("%Y-%m-%d")
     fetch_start = (start + timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # ETF：MongoDB 的 ETF 行情在独立集合（etf_daily_quotes），adapter 内部
+    # 已按代码前缀自动分流；跟踪指数作基准（如无映射则与个股同样用沪深300）
     stock = _fetch_stock_closes(ticker, fetch_start, fetch_end)
     bench = _fetch_benchmark_closes(benchmark, bench_start, fetch_end)
 

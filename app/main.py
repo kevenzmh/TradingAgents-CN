@@ -971,6 +971,41 @@ async def lifespan(app: FastAPI):
             except Exception as _e:
                 logger.warning(f"[SkillReview·定时] 过期清理失败: {_e}")
 
+        # 决策结算闭环：每交易日收盘后结算所有到期的历史研究结论
+        # （含不再被分析的标的），生成实际收益/alpha 评分与反思教训。
+        async def _settle_pending_decisions_job():
+            try:
+                from app.services.decision_settlement_service import run_scheduled_settlement
+                await run_scheduled_settlement()
+            except Exception as _e:
+                logger.warning(f"[决策结算·定时] 失败: {_e}")
+
+        if settings.DECISION_SETTLEMENT_ENABLED:
+            try:
+                from apscheduler.triggers.cron import CronTrigger as _CT
+                _settle_trigger = _CT.from_crontab(
+                    settings.DECISION_SETTLEMENT_CRON, timezone=settings.TIMEZONE
+                )
+            except Exception as _cron_err:
+                logger.warning(
+                    f"⚠️ 决策结算CRON无效 '{settings.DECISION_SETTLEMENT_CRON}'，"
+                    f"退回默认工作日15:30: {_cron_err}"
+                )
+                from apscheduler.triggers.cron import CronTrigger as _CT
+                _settle_trigger = _CT(hour=15, minute=30, day_of_week="1-5", timezone=settings.TIMEZONE)
+
+            scheduler.add_job(
+                _settle_pending_decisions_job,
+                _settle_trigger,
+                id="decision_settlement",
+                name="决策结算（每交易日收盘后）",
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(
+                f"📜 决策结算定时任务已配置（CRON: {settings.DECISION_SETTLEMENT_CRON}）"
+            )
+
         scheduler.add_job(
             _expire_stale_skill_reviews,
             IntervalTrigger(minutes=30, timezone=settings.TIMEZONE),

@@ -1276,6 +1276,26 @@ class BaseAgent(ABC):
             tool_args = tool_call.get('args', {})
             tool_id = tool_call.get('id')
 
+            # 兼容历史/异常的工具调用格式：LLM 偶发把真实参数包在嵌套的
+            # "kwargs" 里（见 core/llm/tool_normalizer.py 的同一解包逻辑）
+            if isinstance(tool_args, dict):
+                nested_kwargs = tool_args.get("kwargs")
+                if isinstance(nested_kwargs, dict):
+                    tool_args = {
+                        **nested_kwargs,
+                        **{k: v for k, v in tool_args.items() if k != "kwargs"},
+                    }
+                    logger.info(
+                        f"🔧 [{self.agent_id}] 检测到嵌套 kwargs 参数，已解包: {list(tool_args.keys())}"
+                    )
+                # 股票代码规范化为引擎统一的无后缀格式（002594.SZ → 002594），
+                # 与 core/llm/tool_normalizer.py 的 normalize_ticker_for_engine 一致
+                from core.llm.tool_normalizer import normalize_ticker_for_engine
+
+                for key in ('ticker', 'symbol'):
+                    if key in tool_args and tool_args[key]:
+                        tool_args[key] = normalize_ticker_for_engine(str(tool_args[key]))
+
             logger.info(f"🔧 [{self.agent_id}] 执行工具: {tool_name}")
             logger.info(f"🔧 [{self.agent_id}] 工具参数: {tool_args}")
 

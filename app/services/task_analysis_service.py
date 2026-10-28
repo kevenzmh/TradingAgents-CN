@@ -253,9 +253,9 @@ class TaskAnalysisService:
             task.progress = 0
             await self._update_task(task)
 
-            # 📜 决策结算闭环：股票分析开始前，结算该股票到期的历史结论
+            # 📜 决策结算闭环：股票/ETF分析开始前，结算该标的到期的历史结论
             # （实际收益 + 相对基准 alpha + 反思教训），失败不影响本次分析。
-            if task.task_type == AnalysisTaskType.STOCK_ANALYSIS:
+            if task.task_type in (AnalysisTaskType.STOCK_ANALYSIS, AnalysisTaskType.ETF_ANALYSIS):
                 symbol_val = str((task.task_params or {}).get("symbol")
                                  or (task.task_params or {}).get("stock_code") or "").strip()
                 if symbol_val:
@@ -326,9 +326,9 @@ class TaskAnalysisService:
             task.status = AnalysisStatus.COMPLETED
             await self._update_task(task)
 
-            # 📜 决策结算闭环：股票分析完成后记录决策（失败不影响分析结果）。
-            # 结算（收益与 alpha 评分 + 反思）在该股票的下一次分析开始时执行。
-            if task.task_type == AnalysisTaskType.STOCK_ANALYSIS:
+            # 📜 决策结算闭环：股票/ETF分析完成后记录决策（失败不影响分析结果）。
+            # 结算（收益与 alpha 评分 + 反思）在该标的的下一次分析开始时执行。
+            if task.task_type in (AnalysisTaskType.STOCK_ANALYSIS, AnalysisTaskType.ETF_ANALYSIS):
                 try:
                     await asyncio.wait_for(
                         asyncio.to_thread(self._record_decision_for_settlement, task, formatted_result),
@@ -2081,14 +2081,15 @@ class TaskAnalysisService:
             return None  # 🔑 保存失败时返回 None
 
     def _record_decision_for_settlement(self, task: UnifiedAnalysisTask, result: Dict[str, Any]) -> None:
-        """把股票分析的研究结论记入决策日志，供持有窗口走出后结算评分。
+        """把股票/ETF分析的研究结论记入决策日志，供持有窗口走出后结算评分。
 
         仅记录可解析出合规结论倾向（乐观/审慎/中性）的结论；同一
-        (分析日期, 代码) 重复分析不重复记录。ETF 不参与（结算走个股价格）。
+        (分析日期, 代码) 重复分析不重复记录。结算价格通道覆盖 A 股
+        个股与 ETF（ETF 用跟踪指数作基准），其他市场先不记录。
         """
         symbol = str((task.task_params or {}).get("symbol")
                      or (task.task_params or {}).get("stock_code") or "").strip()
-        if not symbol or _is_cn_etf_symbol(symbol):
+        if not symbol:
             return
 
         from tradingagents.utils.stock_utils import StockUtils, StockMarket
@@ -2116,6 +2117,13 @@ class TaskAnalysisService:
         memory_log.store_decision(symbol, analysis_date, final_text, rating=action)
         self.logger.info(f"📜 [决策结算] 已记录决策: {symbol} @ {analysis_date} 倾向={action}")
 
+    @staticmethod
+    def _settlement_config() -> Dict[str, Any]:
+        """结算配置：持有期（交易日）从 Settings/环境变量读取。"""
+        from tradingagents.memory import get_holding_period_days
+
+        return {"holding_period_days": get_holding_period_days()}
+
     def _settle_pending_decisions(self, symbol: str) -> None:
         """结算该股票到期的 pending 决策（同步方法，供线程池调用）。
 
@@ -2130,7 +2138,7 @@ class TaskAnalysisService:
             self.logger.warning(f"⚠️ [决策结算] 反思模型不可用，退化为仅记录结果: {e}")
             reflector = None
 
-        result = settle_pending(symbol, memory_log, reflector, config={})
+        result = settle_pending(symbol, memory_log, reflector, config=self._settlement_config())
         if result.settled or result.failed:
             self.logger.info(
                 f"📜 [决策结算] {symbol}: 已结算 {len(result.settled)} 条, "

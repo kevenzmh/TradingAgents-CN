@@ -407,6 +407,15 @@ class Settings(BaseSettings):
     WATCHLIST_ANALYSIS_ENABLED: bool = Field(default=False, description="启用股票关注列表定时分析")
     WATCHLIST_ANALYSIS_CRON: str = Field(default="0 8 * * 1-5", description="定时分析CRON表达式，默认工作日早8点")
 
+    # ===== 决策结算闭环配置 =====
+    # 持有期（交易日）：研究结论结算评分的窗口长度
+    DECISION_HOLDING_PERIOD_DAYS: int = Field(default=5, ge=1, le=60, description="决策结算持有期（交易日）")
+    # 决策结算定时任务：每交易日收盘后结算到期决策（含不再被分析的标的）
+    DECISION_SETTLEMENT_ENABLED: bool = Field(default=True, description="启用决策结算定时任务")
+    DECISION_SETTLEMENT_CRON: str = Field(default="30 15 * * 1-5", description="决策结算CRON表达式，默认工作日15:30收盘后")
+    # 决策日志条数上限（已结算条目轮转，0/负值表示不轮转）
+    DECISION_LOG_MAX_ENTRIES: int = Field(default=0, description="决策日志已结算条目上限，0为不轮转")
+
     # ===== SMTP邮件配置 =====
     SMTP_ENABLED: bool = Field(default=False, description="启用邮件通知功能")
     SMTP_HOST: str = Field(default="smtp.qq.com", description="SMTP服务器地址")
