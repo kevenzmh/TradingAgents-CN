@@ -40,6 +40,9 @@
         @go-paper="goToPaperTrading"
       />
 
+      <!-- 决策结算状态（信号质量：命中率 / 平均 alpha） -->
+      <SettlementStatusCard />
+
       <!-- 进行中任务 + 股票关注列表速览（左右布局） -->
       <el-row :gutter="24" class="jdyun-row">
         <el-col :xs="24" :lg="12">
@@ -279,6 +282,7 @@ import KpiCards from '@/components/Dashboard/KpiCards.vue'
 import RunningTasksCard from '@/components/Dashboard/RunningTasksCard.vue'
 import DismissableBanner from '@/components/Dashboard/DismissableBanner.vue'
 import CollapsibleSection from '@/components/Dashboard/CollapsibleSection.vue'
+import SettlementStatusCard from '@/views/Dashboard/SettlementStatusCard.vue'
 import GuideDialog from '@/components/GuideDialog.vue'
 import { favoritesApi } from '@/api/favorites'
 import { getTaskList as getUnifiedTaskList } from '@/api/unifiedTasks'

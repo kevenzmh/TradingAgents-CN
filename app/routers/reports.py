@@ -480,7 +480,8 @@ async def get_report_detail(
                 "execution_time": doc.get("execution_time", 0),
                 "tokens_used": doc.get("tokens_used", 0),
                 "decision": doc.get("decision", {}),  # 🔥 添加 decision 字段用于格式化
-                "task_type": doc.get("task_type", "")
+                "task_type": doc.get("task_type", ""),
+                "run_settings": doc.get("run_settings", {}),  # 运行配置快照（审计链：报告由什么配置产出）
             }
 
             if doc.get("report_manifest"):

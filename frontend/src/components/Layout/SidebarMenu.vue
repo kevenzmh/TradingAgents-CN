@@ -105,6 +105,11 @@
       <template #title>操作复盘</template>
     </el-menu-item>
 
+    <el-menu-item index="/trading">
+      <el-icon><Warning /></el-icon>
+      <template #title>交易信号中心</template>
+    </el-menu-item>
+
     <!-- Pro：交易计划（社区版发布时自动隐藏，见 navigation.pro.ts） -->
     <el-menu-item v-for="item in proTradingSystemMenuItems" :key="item.path" :index="item.path">
       <el-icon><Tickets /></el-icon>
@@ -231,6 +236,7 @@ import {
   ChatDotRound,
   Coin,
   MagicStick,
+  Warning,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()

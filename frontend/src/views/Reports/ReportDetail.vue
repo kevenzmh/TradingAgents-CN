@@ -118,6 +118,41 @@
         :task-id="growthTaskId"
       />
 
+      <!-- 运行配置快照（审计链：本报告由什么配置产出） -->
+      <el-card v-if="hasRunSettings" class="run-settings-card" shadow="never">
+        <el-collapse>
+          <el-collapse-item name="runSettings">
+            <template #title>
+              <div class="card-header">
+                <el-icon><Setting /></el-icon>
+                <span>运行配置快照</span>
+                <el-tag type="info" size="small" style="margin-left: 8px;">{{ runSettingsEntries.length }} 项</el-tag>
+              </div>
+            </template>
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item
+                v-for="entry in runSettingsEntries"
+                :key="entry.key"
+                :label="entry.label"
+              >
+                <template v-if="Array.isArray(entry.value)">
+                  <el-tag
+                    v-for="v in entry.value"
+                    :key="String(v)"
+                    size="small"
+                    style="margin-right: 4px;"
+                  >{{ formatAnalystName(String(v)) }}</el-tag>
+                </template>
+                <template v-else-if="typeof entry.value === 'boolean'">
+                  <el-tag :type="entry.value ? 'danger' : 'info'" size="small">{{ entry.value ? '开启' : '关闭' }}</el-tag>
+                </template>
+                <template v-else>{{ entry.value }}</template>
+              </el-descriptions-item>
+            </el-descriptions>
+          </el-collapse-item>
+        </el-collapse>
+      </el-card>
+
       <!-- 报告模块 -->
       <el-card class="modules-card" shadow="never">
         <template #header>
@@ -179,7 +214,8 @@ import {
   WarningFilled,
   DataAnalysis,
   Cpu,
-  ArrowDown
+  ArrowDown,
+  Setting
 } from '@element-plus/icons-vue'
 import { ApiClient } from '@/api/request'
 import { marked } from 'marked'
@@ -208,6 +244,7 @@ interface ReportDetailData {
   summary?: string
   task_type?: string
   decision?: ReportDecision
+  run_settings?: Record<string, unknown>
   report_manifest?: Array<{
     field: string
     display_name: string
@@ -519,6 +556,47 @@ const formatTime = (time: string) => {
 const normalizeAnalystName = (analyst: string): string => {
   return analystNameMap[analyst] || analyst
 }
+
+// ── 运行配置快照（run_settings）渲染 ──
+const runSettingsLabelMap: Record<string, string> = {
+  quick_model: '快速模型',
+  deep_model: '深度模型',
+  model_info: '模型信息',
+  research_depth: '研究深度',
+  analysts: '分析师',
+  max_debate_rounds: '辩论轮数',
+  lookback_days: '回看天数',
+  preference_type: '风险偏好',
+  engine_type: '引擎类型',
+  workflow_id: '工作流',
+  temperature_env_override: '温度覆盖（环境变量）',
+  analyst_max_tool_calls: '工具调用上限（环境变量）',
+  engine_mode: '交易模式',
+  live_trading_enabled: '实盘开关',
+  app_version: '系统版本'
+}
+
+interface RunSettingsEntry {
+  key: string
+  label: string
+  value: unknown
+}
+
+const runSettingsEntries = computed<RunSettingsEntry[]>(() => {
+  const raw = report.value?.run_settings
+  if (!raw || typeof raw !== 'object') return []
+  return Object.entries(raw)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([key, value]) => ({
+      key,
+      label: runSettingsLabelMap[key] || key,
+      value
+    }))
+})
+
+const hasRunSettings = computed(() => runSettingsEntries.value.length > 0)
+
+const formatAnalystName = (name: string): string => normalizeAnalystName(name)
 
 // 将分析师英文名称转换为中文
 const formatAnalysts = (analysts: string[] = []) => {
@@ -1055,6 +1133,7 @@ onMounted(() => {
     .summary-card,
     .metrics-card,
     .growth-card,
+    .run-settings-card,
     .modules-card {
       margin-bottom: 24px;
 

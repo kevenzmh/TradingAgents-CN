@@ -646,6 +646,28 @@ const routes: RouteRecordRaw[] = [
       }
     ]
   },
+  {
+    path: '/trading',
+    name: 'TradingCore',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: '交易信号中心',
+      icon: 'Warning',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: '',
+        name: 'TradingCoreHome',
+        component: () => import('@/views/TradingCore/index.vue'),
+        meta: {
+          title: '交易信号中心',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
   // 分析流模块（Pro）→ pro.routes.ts
   ...proWorkflowRoutes,
   // 交易计划（Pro，trading_plan_check 付费功能）→ pro.routes.ts
