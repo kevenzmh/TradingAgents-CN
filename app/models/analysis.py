@@ -61,9 +61,11 @@ class AnalysisParameters(BaseModel):
     include_sentiment: bool = True
     include_risk: bool = True
     language: str = "zh-CN"
-    # 模型配置
-    quick_analysis_model: Optional[str] = "qwen-turbo"
-    deep_analysis_model: Optional[str] = "qwen-max"
+    # 模型配置：不指定时由系统设置里的默认模型接管（unified_analysis_engine
+    # 从 default_models / system_settings 读取）——硬编码默认值会把任务
+    # 覆盖到 DashScope 无 key 通道上直接失败
+    quick_analysis_model: Optional[str] = None
+    deep_analysis_model: Optional[str] = None
     # 引擎选择（默认使用 v2.0 引擎）
     engine: AnalysisEngine = Field(
         default=AnalysisEngine.V2,
