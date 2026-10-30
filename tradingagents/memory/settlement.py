@@ -148,32 +148,98 @@ def _fetch_closes_from_provider(code6: str, start_date: str, end_date: str) -> O
 
 
 def _fetch_benchmark_closes(benchmark: str, start_date: str, end_date: str) -> Optional[pd.Series]:
-    """取基准指数日线收盘。失败抛异常。"""
+    """取基准指数日线收盘。失败抛异常。
+
+    通道顺序：tushare（如已配置）→ akshare。基准指数行情是结算的硬依赖，
+    单一数据源不可用不应让所有信号的结算静默失败——A 股指数在 akshare
+    有稳定的免费历史序列（``stock_zh_index_daily``）。
+    """
     import asyncio
+
+    df = None
 
     from tradingagents.dataflows.providers.china.tushare import get_tushare_provider
 
     provider = get_tushare_provider()
-    if not provider or not provider.is_available():
-        raise RuntimeError("tushare 不可用，无法获取基准指数行情")
+    if provider and provider.is_available():
+        start_str = start_date.replace("-", "")
+        end_str = end_date.replace("-", "")
+        loop = asyncio.new_event_loop()
+        try:
+            df = loop.run_until_complete(
+                provider.get_index_daily(ts_code=benchmark, start_date=start_str, end_date=end_str)
+            )
+        except Exception as exc:
+            logger.warning("tushare 获取基准 %s 行情失败，尝试 akshare: %s", benchmark, exc)
+            df = None
+        finally:
+            loop.close()
 
-    start_str = start_date.replace("-", "")
-    end_str = end_date.replace("-", "")
-    loop = asyncio.new_event_loop()
-    try:
-        df = loop.run_until_complete(
-            provider.get_index_daily(ts_code=benchmark, start_date=start_str, end_date=end_str)
-        )
-    finally:
-        loop.close()
+    if df is None or df.empty:
+        df = _fetch_index_closes_from_akshare(benchmark, start_date, end_date)
+
     if df is None or df.empty:
         raise RuntimeError(f"基准指数 {benchmark} 无行情数据")
 
+    date_col = "trade_date" if "trade_date" in df.columns else "date"
+    if "trade_date" in df.columns:
+        index = pd.to_datetime(df[date_col], format="%Y%m%d", errors="coerce")
+    else:
+        index = pd.to_datetime(df[date_col], errors="coerce")
+
     closes = pd.Series(
         pd.to_numeric(df["close"], errors="coerce").values,
-        index=pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d"),
+        index=index.dt.strftime("%Y-%m-%d"),
     )
-    return closes[closes > 0].sort_index()
+    closes = closes[closes > 0]
+    closes = closes[~closes.index.duplicated(keep="last")]
+    return closes.sort_index()
+
+
+def _index_code_to_akshare_symbol(benchmark: str) -> Optional[str]:
+    """``000300.SH`` → ``sh000300``；``399006.SZ`` → ``sz399006``。"""
+    text = str(benchmark or "").strip().upper()
+    if "." in text:
+        code, suffix = text.split(".", 1)
+    else:
+        code, suffix = text, ""
+    code = code.strip()
+    if not code.isdigit():
+        return None
+    if suffix in ("SH", "SZ"):
+        return f"{suffix.lower()}{code}"
+    # 无后缀时按交易所惯例推断：000/001/002/600/601/603/605/688 见上交所，300/301/399 见深交所
+    if code.startswith(("000300", "000016", "000905", "000688", "000001", "000")) and len(code) == 6:
+        # 指数 000xxx：上证系列（沪深300/上证50/中证500/科创50）与深证 399xxx
+        return f"sh{code}" if code.startswith("000") else f"sz{code}"
+    return f"sz{code}"
+
+
+def _fetch_index_closes_from_akshare(
+    benchmark: str, start_date: str, end_date: str
+) -> Optional[pd.DataFrame]:
+    """akshare 指数日线兜底（tushare 不可用时结算仍可完成）。"""
+    symbol = _index_code_to_akshare_symbol(benchmark)
+    if not symbol:
+        return None
+    try:
+        import akshare as ak
+
+        df = ak.stock_zh_index_daily(symbol=symbol)
+        if df is None or df.empty:
+            return None
+        date_col = "date" if "date" in df.columns else df.columns[0]
+        df = df.copy()
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        mask = (df[date_col] >= pd.Timestamp(start_date)) & (df[date_col] <= pd.Timestamp(end_date))
+        filtered = df.loc[mask]
+        if filtered.empty:
+            return None
+        logger.info("基准 %s 行情改用 akshare 通道（%s 条）", benchmark, len(filtered))
+        return filtered
+    except Exception as exc:
+        logger.warning("akshare 获取基准 %s 行情失败: %s", benchmark, exc)
+        return None
 
 
 def fetch_returns(

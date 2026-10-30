@@ -1717,12 +1717,56 @@ class TaskAnalysisService:
         import re
 
         # 提取动作（统一使用合规研究结论倾向术语）
-        action = '中性'  # 默认
-        if re.search(r'(强烈)?买入|建议买入|看多|BUY|STRONG_BUY|看涨|乐观', text, re.IGNORECASE):
-            action = '乐观'
-        elif re.search(r'(强烈)?卖出|建议卖出|看空|减持|SELL|STRONG_SELL|看跌|审慎', text, re.IGNORECASE):
-            action = '审慎'
-        elif re.search(r'持有|观望|等待|HOLD|中性', text, re.IGNORECASE):
+        # 优先级：结构化 JSON 字段 > 显式“观点/结论”标记 > 关键词兜底。
+        # 关键词兜底必须最后做：报告正文常出现"若数据修正则可能上修至乐观"
+        # 这类假设表述，先匹配关键词会把明确的"审慎"误判成"乐观"。
+        action = None
+        json_obj_for_action = None
+        _json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        if not _json_match:
+            _json_match = re.search(r'(\{[^{}]*"analysis_view"[^{}]*\})', text, re.DOTALL)
+        if _json_match:
+            try:
+                import json as _json
+
+                _raw = _json_match.group(1).strip()
+                if _raw.startswith("{"):
+                    json_obj_for_action = _json.loads(_raw)
+            except Exception:
+                json_obj_for_action = None
+
+        if isinstance(json_obj_for_action, dict):
+            for key in ("analysis_view", "action", "investment_adjustment"):
+                candidate = json_obj_for_action.get(key)
+                if isinstance(candidate, str) and candidate.strip() in ("乐观", "审慎", "中性"):
+                    action = candidate.strip()
+                    break
+
+        if action is None:
+            # 显式标记："观点: 审慎" / "**观点**: 🟡 审慎" / "研究结论为审慎"
+            marked = re.search(
+                r"(?:研究观点|分析观点|观点|结论|倾向)\s*[:：为]?\s*\**\s*[🟢🟡🔴\s]*\**(乐观|审慎|中性)",
+                text,
+            )
+            if marked:
+                action = marked.group(1)
+
+        if action is None:
+            # 关键词兜底（无结构化信号时才使用）：取正文中**最先出现**的倾向词。
+            # 报告的结论通常在开头，假设性表述（"若…则可能转为乐观"）在后文。
+            _candidates = []
+            for _pattern, _label in (
+                (r'看涨|乐观', '乐观'),
+                (r'看跌|审慎|减持', '审慎'),
+                (r'持有|观望|等待|中性', '中性'),
+            ):
+                _m = re.search(_pattern, text)
+                if _m:
+                    _candidates.append((_m.start(), _label))
+            if _candidates:
+                action = min(_candidates)[1]
+
+        if action is None:
             action = '中性'
 
         # 提取目标价格
