@@ -289,6 +289,96 @@ def _get_china_price_snapshot(ticker: str, curr_date: str) -> str:
     return get_china_stock_data_unified(normalized_ticker, recent_start_date, recent_end_date)
 
 
+def _extract_financial_ratios(doc: dict) -> Optional[dict]:
+    """从财报文档解析展示用的比率字典；解析不出任何有效值时返回 None。
+
+    兼容三种落库形态：
+    - periods 表标准化顶层字段（roe / gross_margin / oper_rev ...）
+    - akshare 快照表顶层字段（roe / revenue / net_income）
+    - akshare raw_data.main_indicators 行式结构（"指标"名 -> 各期值），
+      同步展开失败时指标全在 raw 里，顶层可能全空
+    """
+    def _f(value):
+        try:
+            v = float(value)
+            return v if v == v else None  # NaN 检查
+        except (TypeError, ValueError):
+            return None
+
+    def _pct(v):
+        x = _f(v)
+        return f"{x:.1f}%" if x is not None else "N/A"
+
+    def _yi(v):
+        x = _f(v)
+        return f"{x / 1e8:,.1f}亿元" if x is not None else "N/A"
+
+    ratios = {
+        "roe": _pct(doc.get("roe")),
+        "roa": _pct(doc.get("roa")),
+        "gross_margin": _pct(doc.get("gross_margin")),
+        "net_margin": _pct(doc.get("netprofit_margin") or doc.get("net_margin")),
+        "debt_ratio": _pct(doc.get("debt_to_assets") or doc.get("debt_ratio")),
+        "revenue": _yi(doc.get("oper_rev") or doc.get("revenue")),
+        "net_profit": _yi(doc.get("net_profit") or doc.get("net_income")),
+        "ocf": _yi(doc.get("n_cashflow_act")),
+    }
+
+    # 顶层缺的字段用 raw_data 行式结构补齐（akshare 同步只展开了部分顶层字段，
+    # roa/毛利率/净利率/经营现金流常只在 raw 里）。取与文档 report_period 匹配
+    # 或最近的报告期列。
+    raw = doc.get("raw_data")
+    if isinstance(raw, dict):
+        rows = raw.get("main_indicators")
+        if isinstance(rows, list) and rows:
+            by_name: dict = {}
+            period_cols: list = []
+            doc_period = str(doc.get("report_period") or "")[:8]
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("指标") or "").strip()
+                if not name:
+                    continue
+                for col in row:
+                    if col in ("选项", "指标"):
+                        continue
+                    digits = "".join(c for c in str(col) if c.isdigit())
+                    if len(digits) == 8 and col not in period_cols:
+                        period_cols.append(col)
+                if name not in by_name:
+                    by_name[name] = row
+            col = None
+            if doc_period in period_cols:
+                col = doc_period
+            else:
+                sorted_cols = sorted(period_cols, reverse=True)
+                col = sorted_cols[0] if sorted_cols else None
+            if col:
+                def _row(name):
+                    row = by_name.get(name) or {}
+                    return row.get(col)
+
+                raw_ratio = {
+                    "roe": _pct(_row("净资产收益率(ROE)")),
+                    "roa": _pct(_row("总资产报酬率(ROA)")),
+                    "gross_margin": _pct(_row("毛利率")),
+                    "net_margin": _pct(_row("销售净利率") or _row("净利率")),
+                    "debt_ratio": _pct(_row("资产负债率")),
+                    "revenue": _yi(_row("营业总收入") or _row("营业收入")),
+                    "net_profit": _yi(_row("归母净利润") or _row("净利润")),
+                    "ocf": _yi(_row("经营现金流量净额")),
+                }
+                for key, value in raw_ratio.items():
+                    if ratios.get(key) == "N/A" and value != "N/A":
+                        ratios[key] = value
+                    elif ratios.get(key) in (None, "", "N/A") and value != "N/A":
+                        ratios[key] = value
+    if any(v != "N/A" for v in ratios.values()):
+        return ratios
+    return None
+
+
 def _build_point_in_time_fundamentals(ticker: str, as_of_date: str) -> str:
     """历史分析日的财报比率段：读 stock_financial_periods / stock_financial_data。
 
@@ -307,59 +397,41 @@ def _build_point_in_time_fundamentals(ticker: str, as_of_date: str) -> str:
     try:
         db = get_mongo_db_sync()
         query = {"symbol": normalized_ticker}
-        cursor = (
-            db["stock_financial_periods"]
-            .find(query)
-            .sort("report_period", -1)
-            .limit(4)
-        )
-        docs = list(cursor)
-        if not docs:
-            docs = list(
-                db["stock_financial_data"]
-                .find(query)
-                .sort("report_period", -1)
-                .limit(4)
-            )
-        if not docs:
+        candidates = []
+        # periods 表是标准化的展开结构；akshare 同步时顶层字段可能全空
+        # （指标在 raw_data 行式结构里），因此不能只看"有没有文档"，要看
+        # 能不能解析出有效比率——空文档跳过，回退快照表的 raw_data。
+        for coll in ("stock_financial_periods", "stock_financial_data"):
+            for doc in db[coll].find(query).sort("report_period", -1).limit(4):
+                ratios = _extract_financial_ratios(doc)
+                if ratios:
+                    period = str(doc.get("report_period") or doc.get("report_date") or "")[:8]
+                    candidates.append((period, doc.get("data_source") or doc.get("source") or "未知", ratios))
+            if candidates:
+                break
+        if not candidates:
             return (
-                f"（截至 {as_of_date}，财报库中暂无 {normalized_ticker} 的财务数据。"
+                f"（截至 {as_of_date}，财报库中暂无 {normalized_ticker} 的有效财务数据。"
                 f"缺少财务比率会影响结论的可靠性，请在结论中明确说明这一数据缺口。）"
             )
-
-        def _as_float(value):
-            try:
-                v = float(value)
-                return v if v == v else None  # NaN 检查
-            except (TypeError, ValueError):
-                return None
-
-        def _fmt_pct(value):
-            v = _as_float(value)
-            return f"{v:.1f}%" if v is not None else "N/A"
-
-        def _fmt_yi(value):
-            v = _as_float(value)
-            return f"{v / 1e8:,.1f}亿元" if v is not None else "N/A"
 
         lines = [
             "### 历史财报比率（按报告期披露，point-in-time 可用于历史分析）",
         ]
-        for doc in docs:
-            period = str(doc.get("report_period") or doc.get("report_date") or "")[:8]
+        for period, source, ratios in candidates[:4]:
             if len(period) == 8:
                 period_label = f"{period[:4]}-{period[4:6]}-{period[6:]}"
             else:
                 period_label = period or "未知报告期"
-            lines.append(f"\n**报告期 {period_label}**（数据源: {doc.get('data_source') or doc.get('source') or '未知'}）")
-            lines.append(f"- 净资产收益率(ROE): {_fmt_pct(doc.get('roe'))}")
-            lines.append(f"- 总资产收益率(ROA): {_fmt_pct(doc.get('roa'))}")
-            lines.append(f"- 毛利率: {_fmt_pct(doc.get('gross_margin'))}")
-            lines.append(f"- 净利率: {_fmt_pct(doc.get('netprofit_margin'))}")
-            lines.append(f"- 资产负债率: {_fmt_pct(doc.get('debt_to_assets'))}")
-            lines.append(f"- 营业收入: {_fmt_yi(doc.get('oper_rev') or doc.get('revenue'))}")
-            lines.append(f"- 净利润: {_fmt_yi(doc.get('net_profit') or doc.get('net_income'))}")
-            lines.append(f"- 经营现金流净额: {_fmt_yi(doc.get('n_cashflow_act'))}")
+            lines.append(f"\n**报告期 {period_label}**（数据源: {source}）")
+            lines.append(f"- 净资产收益率(ROE): {ratios['roe']}")
+            lines.append(f"- 总资产收益率(ROA): {ratios['roa']}")
+            lines.append(f"- 毛利率: {ratios['gross_margin']}")
+            lines.append(f"- 净利率: {ratios['net_margin']}")
+            lines.append(f"- 资产负债率: {ratios['debt_ratio']}")
+            lines.append(f"- 营业收入: {ratios['revenue']}")
+            lines.append(f"- 净利润: {ratios['net_profit']}")
+            lines.append(f"- 经营现金流净额: {ratios['ocf']}")
 
         lines.append(
             "\n注：以上为最新披露的历史财报比率。PE/PB/总市值等随行情移动的实时"
