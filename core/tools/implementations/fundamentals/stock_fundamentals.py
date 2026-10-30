@@ -739,33 +739,89 @@ def _get_historical_valuation_summary(
 
     start_dt = end_dt - timedelta(days=365 * lookback_years)
 
+    # 通道顺序：tushare（有 token，含 ps_ttm）→ akshare 百度估值（免 token）。
+    # 估值分位是基本面结论的核心输入，单一通道不可用不应让分位整体缺席。
+    valuation_df = None
     try:
         from tradingagents.dataflows.providers.china.tushare import TushareProvider
 
         provider = TushareProvider()
         if not provider.is_available():
             provider.connect_sync()
-        if not provider.is_available() or provider.api is None:
-            return "工具结果未提供历史估值分位数据。"
-
-        ts_code = provider._normalize_ts_code(normalized_ticker)
-        valuation_df = provider.api.daily_basic(
-            ts_code=ts_code,
-            start_date=start_dt.strftime('%Y%m%d'),
-            end_date=end_dt.strftime('%Y%m%d'),
-            fields='ts_code,trade_date,pe,pe_ttm,pb,ps_ttm',
-        )
-
-        return _build_historical_valuation_section_from_frame(
-            valuation_df,
-            window_start=start_dt.strftime('%Y-%m-%d'),
-            window_end=end_dt.strftime('%Y-%m-%d'),
-            requested_analysis_date=requested_curr_date,
-            effective_analysis_date=curr_date,
-        )
+        if provider.is_available() and provider.api is not None:
+            ts_code = provider._normalize_ts_code(normalized_ticker)
+            valuation_df = provider.api.daily_basic(
+                ts_code=ts_code,
+                start_date=start_dt.strftime('%Y%m%d'),
+                end_date=end_dt.strftime('%Y%m%d'),
+                fields='ts_code,trade_date,pe,pe_ttm,pb,ps_ttm',
+            )
     except Exception as exc:
-        logger.warning(f"⚠️ 历史估值分位计算失败: {exc}")
-        return "工具结果未提供历史估值分位数据。"
+        logger.warning(f"⚠️ tushare 估值序列获取失败，尝试 akshare 通道: {exc}")
+
+    if valuation_df is None or (hasattr(valuation_df, "empty") and valuation_df.empty):
+        valuation_df = _fetch_valuation_series_from_akshare(
+            normalized_ticker,
+            start_dt.strftime('%Y-%m-%d'),
+            end_dt.strftime('%Y-%m-%d'),
+        )
+
+    return _build_historical_valuation_section_from_frame(
+        valuation_df,
+        window_start=start_dt.strftime('%Y-%m-%d'),
+        window_end=end_dt.strftime('%Y-%m-%d'),
+        requested_analysis_date=requested_curr_date,
+        effective_analysis_date=curr_date,
+    )
+
+
+def _fetch_valuation_series_from_akshare(
+    code6: str,
+    start_date: str,
+    end_date: str,
+) -> Optional[pd.DataFrame]:
+    """百度估值历史（akshare stock_zh_valuation_baidu）：免 token 的兜底通道。
+
+    每个指标是一次独立查询，归并成与 tushare daily_basic 同构的宽表
+    （trade_date/pe/pe_ttm/pb；ps_ttm 该接口不可用，跳过）。失败返回 None。
+    """
+    try:
+        import akshare as ak
+    except Exception as exc:
+        logger.warning(f"⚠️ [估值分位] akshare 不可用: {exc}")
+        return None
+
+    indicator_map = [
+        ("市盈率(静)", "pe"),
+        ("市盈率(TTM)", "pe_ttm"),
+        ("市净率", "pb"),
+    ]
+    merged: Optional[pd.DataFrame] = None
+    fetched_any = False
+    for indicator, column in indicator_map:
+        try:
+            df = ak.stock_zh_valuation_baidu(symbol=code6, indicator=indicator, period="近三年")
+            if df is None or df.empty or "date" not in df.columns:
+                continue
+            clean = df[["date", "value"]].copy()
+            clean.columns = ["trade_date", column]
+            clean["trade_date"] = clean["trade_date"].astype(str).str.replace("-", "")
+            clean[column] = pd.to_numeric(clean["value"] if "value" in clean else clean[column], errors="coerce")
+            clean = clean.dropna(subset=[column])
+            merged = clean if merged is None else merged.merge(
+                clean[["trade_date", column]], on="trade_date", how="outer"
+            )
+            fetched_any = True
+        except Exception as exc:
+            logger.warning(f"⚠️ [估值分位] akshare 指标 {indicator} 获取失败: {exc}")
+
+    if not fetched_any or merged is None or merged.empty:
+        return None
+
+    merged = merged[merged["trade_date"] >= start_date.replace("-", "")]
+    merged = merged[merged["trade_date"] <= end_date.replace("-", "")]
+    merged = merged.sort_values("trade_date", ascending=False)
+    return merged
 
 
 @tool
