@@ -107,10 +107,17 @@ class MemoryService:
                 register_mem0_mongodb_provider()
 
                 resolved_config = config or build_mem0_config(self._db)
-                if not resolved_config.get("llm", {}).get("config", {}).get("api_key"):
+                # api_key 校验只对远程 OpenAI 兼容厂家有意义；本地 Ollama
+                # (provider=ollama) 无需密钥，占位值即可通过 mem0 配置校验
+                llm_provider = str(resolved_config.get("llm", {}).get("provider") or "")
+                llm_cfg_for_check = resolved_config.get("llm", {}).get("config", {})
+                if not llm_cfg_for_check.get("api_key") and llm_provider != "ollama":
                     self._init_error = "缺少 LLM API Key，mem0 记忆层不可用"
                     logger.warning("[MemoryService] %s", self._init_error)
                     return False
+                if llm_provider == "ollama":
+                    # mem0 OllamaConfig 接受 api_key=None；占位符仅为满足类型
+                    llm_cfg_for_check.setdefault("api_key", "ollama")
 
                 embedder_error = _validate_embedder_config(resolved_config)
                 if embedder_error:

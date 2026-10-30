@@ -283,6 +283,19 @@ def _normalize_openai_base_url(base_url: str) -> str:
     return f"{normalized.rstrip('/')}/v1"
 
 
+def _strip_openai_suffix(base_url: str) -> str:
+    """剥掉 OpenAI 兼容层的 /v1 后缀，还原 Ollama 原生 API 地址。
+
+    数据库里 ollama 厂家的 base_url 存的是 http://host:11434/v1
+    （分析链路 OpenAI 兼容端点用），而 mem0 的 OllamaLLM 与 ollama
+    embedder 走原生 /api/* 端点——带 /v1 会 404。
+    """
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized[: -len("/v1")]
+    return normalized
+
+
 def _parse_default_embedding_model(db_settings: dict) -> Tuple[str, str]:
     default_emb = str(db_settings.get("default_embedding_model") or "").strip()
     if not default_emb or ":" not in default_emb:
@@ -344,7 +357,8 @@ def _build_embedder_config_from_provider_doc(provider_doc: dict, model_name: str
         if not selected_model.startswith("models/"):
             config["model"] = f"models/{selected_model}"
     elif mem0_provider == "ollama":
-        config["ollama_base_url"] = base_url or "http://localhost:11434"
+        # 原生 /api/* 端点，剥掉 OpenAI 兼容后缀 /v1（见 _strip_openai_suffix）
+        config["ollama_base_url"] = _strip_openai_suffix(base_url) or "http://localhost:11434"
 
     return {
         "provider": mem0_provider,
@@ -380,7 +394,9 @@ def _build_mem0_llm_config_from_unified_config(llm_config: Any) -> dict:
         if not model_name.startswith("models/"):
             config["model"] = f"models/{model_name}"
     else:
-        config["ollama_base_url"] = base_url or "http://localhost:11434"
+        # mem0 的 OllamaLLM/ollama embedder 用原生 /api/* 端点，
+        # 必须剥掉 OpenAI 兼容后缀 /v1（那是 /v1/chat/completions 用的）
+        config["ollama_base_url"] = _strip_openai_suffix(base_url) or "http://localhost:11434"
 
     return {
         "provider": mem0_provider,

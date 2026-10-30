@@ -244,6 +244,21 @@ class MongoDBClientCosine:
         except Exception as e:
             logger.error("[mem0-mongodb] 删除失败: %s", e)
 
+    def keyword_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        filters: Optional[Dict] = None,
+    ):
+        """BM25/关键词搜索能力声明。
+
+        本存储只支持向量 cosine 检索，无原生全文索引。返回 None 让
+        mem0 走"semantic similarity only"降级路径（基类默认行为的显式
+        保留）——不实现这个方法时 mem0 2.2.1 的混合检索会直接
+        AttributeError（ getattr 的能力探测只认基类默认实现）。
+        """
+        return None
+
     def update(
         self,
         vector_id: str,
