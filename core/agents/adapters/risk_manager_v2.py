@@ -64,7 +64,7 @@ RISK_ASSESSMENT_SCHEMA_PROMPT = """【输出格式契约·必须严格遵守】
   "final_trade_decision": {
     "action": "乐观" | "审慎" | "中性",
     "confidence": 0.0-1.0 之间的浮点数,
-    "price_analysis_range": "价格分析区间（可选，无则填 null）",
+    "price_analysis_range": "价格分析区间，格式 [下限, 上限]，数组。action 为乐观或审慎时必须给出（基于报告中出现过的价格数据推算合理区间），只有 action 为中性且确实无价格依据时才可填 null",
     "risk_reference_price": "风险控制参考价位（可选，无则填 null）",
     "risk_exposure_ratio": "风险敞口分析（可选，无则填 null）",
     "reasoning": "分析推理",
@@ -77,7 +77,7 @@ RISK_ASSESSMENT_SCHEMA_PROMPT = """【输出格式契约·必须严格遵守】
 1. investment_adjustment 与 action 字段只能取值 "乐观" / "审慎" / "中性"。
 2. 禁止使用 "看涨" / "看跌" / "买入" / "卖出" / "加仓" / "减仓" / "持有" / "清仓" 等交易指令或市场观点术语。
 3. "乐观/审慎/中性" 表达的是研究结论的倾向性，不构成任何交易建议或操作指令。
-4. 禁止给出具体目标价或止损价，可输出 "价格分析区间" 并标注不确定性。
+4. 禁止给出具体目标价或止损价，price_analysis_range 只是基于已有数据的价格分析区间，必须标注不确定性。
 5. 禁止承诺收益或保证盈利，必须提示风险。
 6. 所有结论必须基于已获取的数据，不得编造数据或指标。
 
@@ -87,7 +87,8 @@ RISK_ASSESSMENT_SCHEMA_PROMPT = """【输出格式契约·必须严格遵守】
 - investment_adjustment / action: 只能是"乐观"/"审慎"/"中性"
 - confidence: 0-1 之间的浮点数（不要写 0-100）
 - key_risks: 字符串数组，每项是一条核心风险
-- 可选字段若无内容，填 null，不要省略字段名
+- price_analysis_range: 乐观/审慎结论必须输出，形如 [1200.5, 1380.0]；它是后续风险测算的输入，缺失会导致结论无法进入下游流程。区间必须覆盖近期实际成交价（如工具返回的当前价格/收盘价），宽度建议在 5%-20% 之间
+- risk_reference_price / risk_exposure_ratio: 可选字段，无内容填 null，不要省略字段名
 
 输出必须是合法 JSON，不要在 JSON 前后添加任何文字或代码块标记。
 

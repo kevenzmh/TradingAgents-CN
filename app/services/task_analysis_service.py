@@ -2157,7 +2157,11 @@ class TaskAnalysisService:
             self.logger.info(f"🎯 [交易信号] 结论倾向 '{action}'，不产生交易信号")
             return
 
-        from app.services.trading_core import translate_decision_to_signal, TradingExecutionEngine
+        from app.services.trading_core import (
+            SignalTranslationError,
+            translate_decision_to_signal,
+            TradingExecutionEngine,
+        )
 
         user_id = str(task.user_id)
         analysis_date = str(
@@ -2175,16 +2179,35 @@ class TaskAnalysisService:
         pos = await db["paper_positions"].find_one({"user_id": user_id, "code": symbol})
         position_quantity = int(pos.get("quantity", 0)) if pos else 0
 
-        signal = translate_decision_to_signal(
-            user_id=user_id,
-            code=symbol,
-            decision=decision,
-            analysis_date=analysis_date,
-            cash_by_currency=cash_by_currency,
-            position_quantity=position_quantity,
-            task_id=str(task.task_id),
-            analysis_id=str(result.get("analysis_id") or ""),
-        )
+        def _translate(dec: Dict[str, Any]):
+            return translate_decision_to_signal(
+                user_id=user_id,
+                code=symbol,
+                decision=dec,
+                analysis_date=analysis_date,
+                cash_by_currency=cash_by_currency,
+                position_quantity=position_quantity,
+                task_id=str(task.task_id),
+                analysis_id=str(result.get("analysis_id") or ""),
+            )
+
+        try:
+            signal = _translate(decision)
+        except SignalTranslationError as _ste:
+            # 模型未输出价格区间时用分析日收盘价兜底（±2% 观察区间），
+            # 不让一个可推导的参数卡死整条信号链路
+            if "参考价格" not in str(_ste):
+                raise
+            fallback = await self._close_asof(db, symbol, analysis_date)
+            if fallback is None:
+                self.logger.warning(f"⚠️ [交易信号] {symbol} 无价格区间且分析日收盘价不可用，信号放弃")
+                return
+            patched = dict(decision)
+            patched["price_analysis_range"] = [round(fallback * 0.98, 4), round(fallback * 1.02, 4)]
+            self.logger.info(
+                f"🎯 [交易信号] {symbol} 无价格区间，按分析日收盘 {fallback} 兜底参考价"
+            )
+            signal = _translate(patched)
         if signal is None:
             self.logger.info(f"🎯 [交易信号] {symbol} 未产生信号（无持仓卖出/倾向不可交易）")
             return
@@ -2204,6 +2227,29 @@ class TaskAnalysisService:
             self.logger.warning(
                 f"🎯 [交易信号] 风控拒绝: {outcome.get('risk', {}).get('rejections')}"
             )
+
+    @staticmethod
+    async def _close_asof(db, symbol: str, analysis_date: str) -> Optional[float]:
+        """分析日（或其之前最近一日）的收盘价：MongoDB 日线优先。
+
+        与 signal_only/dry_run 的确定性语义一致——参考价来自已完成交易日的
+        落库数据，不做实时行情查询（历史回放时实时价是未来信息）。
+        """
+        code6 = str(symbol).split(".")[0].zfill(6)
+        try:
+            doc = await db["stock_daily_quotes"].find_one(
+                {"symbol": code6, "trade_date": {"$lte": analysis_date}},
+                {"close": 1},
+                sort=[("trade_date", -1)],
+            )
+            if doc:
+                close = float(doc.get("close") or 0)
+                if close > 0:
+                    return close
+        except Exception as _exc:
+            pass
+        return None
+
 
     def _get_db(self):
         """惰性获取 Mongo db（分析服务持有实例）。"""

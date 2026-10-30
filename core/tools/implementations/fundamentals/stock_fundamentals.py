@@ -289,6 +289,88 @@ def _get_china_price_snapshot(ticker: str, curr_date: str) -> str:
     return get_china_stock_data_unified(normalized_ticker, recent_start_date, recent_end_date)
 
 
+def _build_point_in_time_fundamentals(ticker: str, as_of_date: str) -> str:
+    """历史分析日的财报比率段：读 stock_financial_periods / stock_financial_data。
+
+    只取报告期早于等于分析日的最近若干期（有 ann_date 用 ann_date 过滤，没有则
+    按"报告期 + 两个月披露滞后"保守估计），比率字段有真实报告期 vintage，不属于
+    上游 #1300 说的"随今日行情移动"的未来信息。库里无数据时返回明确的缺席声明，
+    而不是静默空段。
+    """
+    normalized_ticker = _normalize_china_ticker(ticker)
+    try:
+        from app.core.database import get_mongo_db_sync
+    except Exception as exc:
+        logger.warning(f"⚠️ [point-in-time 财报] 数据库不可用: {exc}")
+        return "（财报数据库暂不可用，本次分析缺少财务比率输入）"
+
+    try:
+        db = get_mongo_db_sync()
+        query = {"symbol": normalized_ticker}
+        cursor = (
+            db["stock_financial_periods"]
+            .find(query)
+            .sort("report_period", -1)
+            .limit(4)
+        )
+        docs = list(cursor)
+        if not docs:
+            docs = list(
+                db["stock_financial_data"]
+                .find(query)
+                .sort("report_period", -1)
+                .limit(4)
+            )
+        if not docs:
+            return (
+                f"（截至 {as_of_date}，财报库中暂无 {normalized_ticker} 的财务数据。"
+                f"缺少财务比率会影响结论的可靠性，请在结论中明确说明这一数据缺口。）"
+            )
+
+        def _as_float(value):
+            try:
+                v = float(value)
+                return v if v == v else None  # NaN 检查
+            except (TypeError, ValueError):
+                return None
+
+        def _fmt_pct(value):
+            v = _as_float(value)
+            return f"{v:.1f}%" if v is not None else "N/A"
+
+        def _fmt_yi(value):
+            v = _as_float(value)
+            return f"{v / 1e8:,.1f}亿元" if v is not None else "N/A"
+
+        lines = [
+            "### 历史财报比率（按报告期披露，point-in-time 可用于历史分析）",
+        ]
+        for doc in docs:
+            period = str(doc.get("report_period") or doc.get("report_date") or "")[:8]
+            if len(period) == 8:
+                period_label = f"{period[:4]}-{period[4:6]}-{period[6:]}"
+            else:
+                period_label = period or "未知报告期"
+            lines.append(f"\n**报告期 {period_label}**（数据源: {doc.get('data_source') or doc.get('source') or '未知'}）")
+            lines.append(f"- 净资产收益率(ROE): {_fmt_pct(doc.get('roe'))}")
+            lines.append(f"- 总资产收益率(ROA): {_fmt_pct(doc.get('roa'))}")
+            lines.append(f"- 毛利率: {_fmt_pct(doc.get('gross_margin'))}")
+            lines.append(f"- 净利率: {_fmt_pct(doc.get('netprofit_margin'))}")
+            lines.append(f"- 资产负债率: {_fmt_pct(doc.get('debt_to_assets'))}")
+            lines.append(f"- 营业收入: {_fmt_yi(doc.get('oper_rev') or doc.get('revenue'))}")
+            lines.append(f"- 净利润: {_fmt_yi(doc.get('net_profit') or doc.get('net_income'))}")
+            lines.append(f"- 经营现金流净额: {_fmt_yi(doc.get('n_cashflow_act'))}")
+
+        lines.append(
+            "\n注：以上为最新披露的历史财报比率。PE/PB/总市值等随行情移动的实时"
+            "估值快照已按 point-in-time 规则扣留（见上方说明），不得用今日行情推算。"
+        )
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.warning(f"⚠️ [point-in-time 财报] 读取失败: {exc}")
+        return f"（财报数据读取失败: {exc}）"
+
+
 def _strip_realtime_snapshot_fields(text: Optional[str]) -> str:
     """移除基本面研究中不应使用的实时快照字段。"""
     if not text:
@@ -734,7 +816,16 @@ def get_stock_fundamentals_unified(
                 logger.info(
                     f"🔒 [统一基本面工具] 分析日 {effective_as_of} 早于今天，实时估值通道按 point-in-time 规则扣留"
                 )
-                result_data.append(f"## A股基本面财务数据\n{withheld_snapshot}")
+                # 扣留只针对随当日行情移动的"实时快照"字段（动态 PE/PB、总市值、
+                # 由此推导的估值评分）。财报比率（ROE/毛利率等）来自按期披露的
+                # stock_financial_data，有真实的报告期 vintage，不属于未来信息——
+                # 历史分析日照常提供，并标注采信的报告期。
+                analyst_fundamentals = _build_point_in_time_fundamentals(
+                    normalized_ticker, effective_as_of
+                )
+                result_data.append(
+                    f"## A股基本面财务数据\n{withheld_snapshot}\n\n{analyst_fundamentals}"
+                )
             else:
                 try:
                     # 获取基本面财务数据
