@@ -349,6 +349,29 @@ const routes: RouteRecordRaw[] = [
     ]
   },
   {
+    // 网格回测：股票×日期网格重放分析引擎，决策日志评分
+    path: '/backtest',
+    name: 'Backtest',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: '网格回测',
+      icon: 'DataAnalysis',
+      requiresAuth: true,
+      transition: 'fade'
+    },
+    children: [
+      {
+        path: '',
+        name: 'BacktestHome',
+        component: () => import('@/views/Backtest/index.vue'),
+        meta: {
+          title: '网格回测',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
+  {
     // Skill 中心（v3.6.0 起免费开放，随社区版开源）
     path: '/skills',
     name: 'SkillCenter',

@@ -1075,6 +1075,15 @@ async def lifespan(app: FastAPI):
             await scheduler_service.check_suspended_tasks_on_startup()
         except Exception as e:
             logger.warning(f"⚠️ 检测挂起任务失败（不影响启动）: {e}")
+
+        # 🔥 网格回测：收割上次进程遗留的僵尸 run（后台线程随进程终止，
+        # 不清理会永久卡住"同一时刻只允许一个 run"的互斥）
+        try:
+            from app.core.database import get_mongo_db
+            from app.services.grid_backtest_service import reap_orphaned_runs
+            await reap_orphaned_runs(get_mongo_db())
+        except Exception as e:
+            logger.warning(f"⚠️ 回测僵尸 run 清理失败（不影响启动）: {e}")
     except Exception as e:
         logger.error(f"❌ 调度器启动失败: {e}", exc_info=True)
         raise  # 抛出异常，阻止应用启动

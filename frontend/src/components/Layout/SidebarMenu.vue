@@ -105,6 +105,11 @@
       <template #title>操作复盘</template>
     </el-menu-item>
 
+    <el-menu-item index="/backtest">
+      <el-icon><DataAnalysis /></el-icon>
+      <template #title>网格回测</template>
+    </el-menu-item>
+
     <el-menu-item index="/trading">
       <el-icon><Warning /></el-icon>
       <template #title>交易信号中心</template>

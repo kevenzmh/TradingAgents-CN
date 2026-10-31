@@ -39,6 +39,7 @@ from app.routers import (
     model_capabilities,
     cache,
     logs,
+    backtest,
 )
 from app.routers import sync as sync_router
 from app.routers import multi_source_sync
@@ -142,6 +143,8 @@ COMMUNITY_ROUTERS = [
     (skills_router.router, "skills", {"tags": ["skills"]}),
     # 决策结算闭环（社区版）：状态查询 / 手动结算 / 历史教训查看
     (decision_settlement_router.router, "decision_settlement", {"tags": ["decision-settlement"]}),
+    # 网格回测（社区版）：股票×日期网格重放分析引擎，决策日志评分
+    (backtest.router, "backtest", {"tags": ["backtest"]}),
     # 交易核心（实盘通道）：信号/订单/确认/风控/kill switch
     (trading_router.router, "trading", {"tags": ["trading"]}),
     (skill_generation_router.router, "skill_generation", {"tags": ["skill-generation"]}),
