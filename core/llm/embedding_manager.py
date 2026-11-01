@@ -57,6 +57,10 @@ EMBEDDING_DIMENSIONS = {
     "nomic-embed-text": 768,
     "mxbai-embed-large": 1024,
     "all-minilm": 384,
+    # Qwen3-Embedding 官方 GGUF（MTEB 多语言头部，中文金融检索实测 5/5；
+    # 注意 4B 版本维度是 2560，别与 0.6B 混用）
+    "qwen3-embedding:0.6b": 1024,
+    "qwen3-embedding-0.6b": 1024,
 
     # 默认维度
     "default": 1024,  # 🔥 统一使用 1024 作为默认维度（兼容更多模型）

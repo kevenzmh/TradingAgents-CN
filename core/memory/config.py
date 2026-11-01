@@ -39,7 +39,7 @@ _DEFAULT_EMBEDDING_MODELS = {
     "openai": "text-embedding-3-small",
     "google": "text-embedding-004",
     "gemini": "text-embedding-004",
-    "ollama": "nomic-embed-text",
+    "ollama": "qwen3-embedding:0.6b",
     "zhipu": "embedding-2",
     "siliconflow": "BAAI/bge-large-zh-v1.5",
     "302ai": "text-embedding-3-small",
@@ -516,7 +516,7 @@ def build_mem0_config(db=None) -> Dict[str, Any]:
             "vector_store": vector_store,
             "llm": llm,
             "embedder": embedder,
-            "custom_prompt": FINANCIAL_FACT_EXTRACTION_PROMPT,
+            "custom_instructions": FINANCIAL_FACT_EXTRACTION_PROMPT,
             "version": "v1.1",
         }
 
@@ -588,7 +588,7 @@ def build_mem0_config(db=None) -> Dict[str, Any]:
     config: Dict[str, Any] = {
         "vector_store": vector_store,
         "llm": llm,
-        "custom_prompt": FINANCIAL_FACT_EXTRACTION_PROMPT,
+        "custom_instructions": FINANCIAL_FACT_EXTRACTION_PROMPT,
         "version": "v1.1",
     }
     if embedder:
