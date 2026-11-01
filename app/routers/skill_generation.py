@@ -109,6 +109,20 @@ async def _get_service_with_llm(
     )
     from core.llm import UnifiedLLMClient
 
+    # 三个客户端一律无 key 不建——Skill 生成是"配置了推理/编程模型才可用"
+    # 的功能；系统设置把推理/编程模型指到无 key 通道（如未配置的 deepseek）
+    # 时，凭空构造客户端会让连"列出历史会话"这种纯读接口都 500。
+    def _safe_client(config):
+        if not config or not getattr(config, "api_key", None):
+            miss = f"{getattr(config, 'provider', '?')}/{getattr(config, 'model', '?')}" if config else "未配置"
+            logger.info("Skill 生成跳过无 API Key 的模型配置: %s", miss)
+            return None
+        try:
+            return UnifiedLLMClient.from_config(config)
+        except Exception as exc:
+            logger.warning("Skill 生成客户端创建失败（忽略，置为不可用）: %s", exc)
+            return None
+
     # 需求分析：深度推理大模型
     reasoning_config = None
     if reasoning_model:
@@ -116,17 +130,13 @@ async def _get_service_with_llm(
         reasoning_config = await _get_llm_config_for_model(db, reasoning_model)
     if not reasoning_config:
         reasoning_config = await get_reasoning_llm_config(db)
-    reasoning_client = (
-        UnifiedLLMClient.from_config(reasoning_config) if reasoning_config else None
-    )
+    reasoning_client = _safe_client(reasoning_config)
     if reasoning_client:
         logger.debug("Skill 需求分析使用深度推理大模型")
 
     # 需求对话：快速模型（清晰度评估/边界检测/多轮回复），显著降低轮次响应延迟
     quick_config = await get_quick_llm_config(db)
-    quick_client = (
-        UnifiedLLMClient.from_config(quick_config) if quick_config else None
-    )
+    quick_client = _safe_client(quick_config)
     if quick_client:
         logger.debug("Skill 需求对话使用快速模型")
 
@@ -137,9 +147,7 @@ async def _get_service_with_llm(
         coding_config = await _get_llm_config_for_model(db, coding_model)
     if not coding_config:
         coding_config = await get_coding_llm_config(db)
-    coding_client = (
-        UnifiedLLMClient.from_config(coding_config) if coding_config else None
-    )
+    coding_client = _safe_client(coding_config)
     if coding_client:
         logger.debug("Skill 代码生成使用编程大模型")
 
