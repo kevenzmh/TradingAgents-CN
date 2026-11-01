@@ -60,6 +60,7 @@ logs/
 *.pid.lock
 .coverage
 .pytest_cache/
+pytest_tmp*/
 htmlcov/
 runtime/
 temp/
