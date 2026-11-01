@@ -18,8 +18,13 @@ router = APIRouter(
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COURSE_ROOT = PROJECT_ROOT / "docs" / "courses" / "advanced" / "expanded"
-IMAGE_ROOT = COURSE_ROOT / "images"
+# v3.0 课程以阶段子目录组织（docs/07-courses/v3.0/phase-XX-name/lesson-XX.md）；
+# 兼容旧版平铺目录（docs/courses/advanced/expanded/lesson-XX.md，上游 Pro 版）。
+COURSE_ROOTS = [
+    PROJECT_ROOT / "docs" / "07-courses" / "v3.0",
+    PROJECT_ROOT / "docs" / "courses" / "advanced" / "expanded",
+]
+IMAGE_ROOT = PROJECT_ROOT / "docs" / "07-courses" / "v3.0" / "images"
 
 LESSON_FILE_PREFIX = "lesson-"
 LESSON_FILE_SUFFIX = ".md"
@@ -44,11 +49,37 @@ def _resolve_within(root: Path, relative_path: str) -> Path:
     return candidate
 
 
+def _find_lesson_file(filename: str) -> Path:
+    """在所有课程根目录（含阶段子目录）中定位课程文件。"""
+    for root in COURSE_ROOTS:
+        # 平铺：root/lesson-XX.md
+        direct = root / filename
+        if direct.is_file():
+            return direct
+        # 阶段子目录：root/phase-XX-name/lesson-XX.md
+        if root.is_dir():
+            for phase_dir in sorted(root.iterdir()):
+                if not phase_dir.is_dir():
+                    continue
+                candidate = phase_dir / filename
+                if candidate.is_file():
+                    return candidate
+    raise HTTPException(status_code=404, detail="课程不存在")
+
+
 def _resolve_lesson_file(filename: str) -> Path:
-    if not filename.startswith(LESSON_FILE_PREFIX) or not filename.endswith(LESSON_FILE_SUFFIX):
+    # v3.0 课程配置中的 file 字段带阶段目录前缀（phase-XX-name/lesson-XX.md），
+    # 旧版为平铺文件名（lesson-XX.md）——两种都放行，安全边界在 _find_lesson_file
+    # 的目录内解析中保证。
+    if not filename.endswith(LESSON_FILE_SUFFIX):
         raise HTTPException(status_code=404, detail="课程不存在")
 
-    return _resolve_within(COURSE_ROOT, filename)
+    # 归一化：取路径的最后一段做前缀校验，防止借道子目录写其他文件
+    leaf = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if not leaf.startswith(LESSON_FILE_PREFIX):
+        raise HTTPException(status_code=404, detail="课程不存在")
+
+    return _find_lesson_file(leaf)
 
 
 def _resolve_sample_file(sample_id: str) -> Path:
@@ -56,7 +87,12 @@ def _resolve_sample_file(sample_id: str) -> Path:
     if not filename:
         raise HTTPException(status_code=404, detail="课程示例不存在")
 
-    return _resolve_within(COURSE_ROOT, filename)
+    for root in COURSE_ROOTS:
+        direct = root / filename
+        if direct.is_file():
+            return direct
+
+    raise HTTPException(status_code=404, detail="课程示例不存在")
 
 
 @router.get("/lessons/content")
