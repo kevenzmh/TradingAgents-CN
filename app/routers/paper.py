@@ -300,18 +300,24 @@ async def _get_last_price(code: str, market: str) -> Optional[float]:
     if market in {"CN", "ETF"}:
         code6 = str(code or "").strip().zfill(6)
         # 1. 尝试从 market_quotes 获取
+        # 🔥 market_quotes 是多来源写入的（quotes_ingestion/stock_sync/BaoStock 初始化），
+        # 价格字段随来源不同：price / close / current_price 至少其一存在，任一命中即用。
         q = await db["market_quotes"].find_one(
             {"$or": [{"code": code}, {"code": code6}, {"symbol": code}, {"symbol": code6}]},
-            {"_id": 0, "close": 1}
+            {"_id": 0, "close": 1, "price": 1, "current_price": 1, "pre_close": 1}
         )
-        if q and q.get("close") is not None:
-            try:
-                price = float(q["close"])
+        if q:
+            for field in ("close", "price", "current_price", "pre_close"):
+                value = q.get(field)
+                if value is None:
+                    continue
+                try:
+                    price = float(value)
+                except (TypeError, ValueError):
+                    continue
                 if price > 0:
-                    logger.debug(f"✅ 从 market_quotes 获取价格: {code} = {price}")
+                    logger.debug(f"✅ 从 market_quotes.{field} 获取价格: {code} = {price}")
                     return price
-            except Exception as e:
-                logger.warning(f"⚠️ market_quotes 价格转换失败 {code}: {e}")
 
         # 2. 回退到 stock_basic_info 的 current_price
         basic_info = await db["stock_basic_info"].find_one(
@@ -326,6 +332,24 @@ async def _get_last_price(code: str, market: str) -> Optional[float]:
                     return price
             except Exception as e:
                 logger.warning(f"⚠️ stock_basic_info 价格转换失败 {code}: {e}")
+
+        # 3. 🔥 回退到 stock_daily_quotes 最新日线收盘价（历史同步每晚写入，
+        #    覆盖所有自选/曾研究过的股票；market_quotes 只覆盖 122 只 600 开头的老数据）
+        daily = await db["stock_daily_quotes"].find_one(
+            {"$or": [{"code": code6}, {"symbol": code6}]},
+            sort=[("trade_date", -1)],
+            projection={"_id": 0, "close": 1, "trade_date": 1}
+        )
+        if daily and daily.get("close") is not None:
+            try:
+                price = float(daily["close"])
+                if price > 0:
+                    logger.info(
+                        f"✅ 从 stock_daily_quotes 获取价格: {code6} = {price} (日期: {daily.get('trade_date')})"
+                    )
+                    return price
+            except Exception as e:
+                logger.warning(f"⚠️ stock_daily_quotes 价格转换失败 {code6}: {e}")
 
         etf_daily = await db["etf_daily_quotes"].find_one(
             {"code": code6},
@@ -383,6 +407,7 @@ async def _get_today_price_range(code: str, market: str) -> Optional[Dict[str, f
     # A股：从 market_quotes 获取
     if market in {"CN", "ETF"}:
         code6 = str(code or "").strip().zfill(6)
+        # 🔥 价格区间：market_quotes（若高低价齐全）→ stock_daily_quotes 最新日线 → ETF 日线
         q = await db["market_quotes"].find_one(
             {"$or": [{"code": code}, {"code": code6}, {"symbol": code}, {"symbol": code6}]},
             {"_id": 0, "high": 1, "low": 1}
@@ -396,6 +421,32 @@ async def _get_today_price_range(code: str, market: str) -> Optional[Dict[str, f
                     return {"high": high, "low": low}
             except Exception as e:
                 logger.warning(f"⚠️ market_quotes 价格区间转换失败 {code}: {e}")
+
+        # 🔥 回退到 stock_daily_quotes 最新日线的当日高低价（历史同步覆盖全量自选/研究过的股票）
+        daily = await db["stock_daily_quotes"].find_one(
+            {"$or": [{"code": code6}, {"symbol": code6}]},
+            sort=[("trade_date", -1)],
+            projection={"_id": 0, "high": 1, "low": 1, "open": 1, "close": 1, "trade_date": 1}
+        )
+        if daily:
+            try:
+                high = daily.get("high")
+                low = daily.get("low")
+                if high is None or low is None:
+                    open_price = daily.get("open")
+                    close_price = daily.get("close")
+                    if open_price is not None and close_price is not None:
+                        high = max(float(open_price), float(close_price))
+                        low = min(float(open_price), float(close_price))
+                high_val = float(high) if high is not None else None
+                low_val = float(low) if low is not None else None
+                if high_val is not None and low_val is not None and high_val > 0 and low_val > 0:
+                    logger.debug(
+                        f"✅ 从 stock_daily_quotes 获取价格区间: {code6} = high:{high_val}, low:{low_val} (日期: {daily.get('trade_date')})"
+                    )
+                    return {"high": high_val, "low": low_val}
+            except Exception as e:
+                logger.warning(f"⚠️ stock_daily_quotes 价格区间转换失败 {code6}: {e}")
 
         etf_daily = await db["etf_daily_quotes"].find_one(
             {"code": code6},
