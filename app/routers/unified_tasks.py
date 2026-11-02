@@ -268,6 +268,100 @@ async def resume_task(
         raise HTTPException(status_code=500, detail=f"恢复任务失败: {str(e)}")
 
 
+# ==================== 执行轨迹查询（P1: 机器可读执行轨迹） ====================
+
+async def _get_owned_task(task_id: str, user: dict):
+    """校验任务存在且属于当前用户，返回任务对象"""
+    user_id = PyObjectId(user["id"])
+    service = get_task_analysis_service()
+    task = await service.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问此任务")
+    return task
+
+
+@router.get("/{task_id}/traces", summary="获取任务的执行轨迹列表")
+async def get_task_traces(
+    task_id: str,
+    limit: int = Query(200, ge=1, le=500, description="最多返回条数"),
+    user: dict = Depends(get_current_user)
+):
+    """获取任务执行轨迹列表（每步 agent 一条，摘要不含 Prompt/输出全文）
+
+    只返回该任务开启轨迹采集后记录到的条目；未开启采集的任务返回空列表。
+    """
+    try:
+        await _get_owned_task(task_id, user)
+
+        from app.pro.services.execution_trace_service import execution_trace_service
+        traces = await execution_trace_service.list_by_task(task_id, limit=limit)
+
+        # 懒清理过期轨迹（7 天保留，与文档承诺一致；失败不影响查询）
+        try:
+            await execution_trace_service.cleanup_expired()
+        except Exception:
+            pass
+
+        # 任务级汇总
+        total_tokens = sum(
+            (t.get("token_usage") or {}).get("total_tokens") or 0 for t in traces
+        )
+        failed_count = sum(1 for t in traces if not t.get("success", True))
+        tool_calls_count = sum(len(t.get("tool_calls") or []) for t in traces)
+
+        return {
+            "success": True,
+            "data": {
+                "task_id": task_id,
+                "count": len(traces),
+                "total_tokens": total_tokens,
+                "failed_count": failed_count,
+                "tool_calls_count": tool_calls_count,
+                "traces": traces,
+            },
+            "message": "ok"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取任务执行轨迹失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取执行轨迹失败: {str(e)}")
+
+
+@router.get("/{task_id}/traces/{trace_id}", summary="获取单条执行轨迹详情")
+async def get_task_trace_detail(
+    task_id: str,
+    trace_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """获取单条轨迹完整内容（含 Prompt 全文、LLM 输出全文、工具调用明细）"""
+    try:
+        await _get_owned_task(task_id, user)
+
+        from app.pro.services.execution_trace_service import execution_trace_service
+        trace = await execution_trace_service.get_trace(trace_id)
+
+        if not trace:
+            raise HTTPException(status_code=404, detail="轨迹不存在")
+
+        # 轨迹必须归属该任务（防越权拉取其他任务的轨迹）
+        if trace.get("task_id") != task_id:
+            raise HTTPException(status_code=403, detail="无权访问此轨迹")
+
+        return {
+            "success": True,
+            "data": trace,
+            "message": "ok"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取执行轨迹详情失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取执行轨迹详情失败: {str(e)}")
+
+
 # ==================== 通用研究任务专用查询 ====================
 
 @router.get("/general/list", summary="获取通用研究任务列表")

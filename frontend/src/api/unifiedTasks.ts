@@ -157,6 +157,107 @@ export function resumeTask(taskId: string) {
   return ApiClient.post<{ success: boolean; message: string }>(`/api/v2/tasks/${taskId}/resume`)
 }
 
+// ==================== 执行轨迹（P1: 机器可读执行轨迹） ====================
+
+/**
+ * 单条执行轨迹摘要（列表项，不含 Prompt/输出全文）
+ */
+export interface ExecutionTraceSummary {
+  trace_id: string
+  agent_id: string
+  agent_version?: string
+  agent_type?: string
+  manager_type?: string | null
+  ticker?: string | null
+  analysis_date?: string | null
+  workflow_id?: string | null
+  task_id?: string | null
+  started_at: string
+  finished_at?: string | null
+  execution_duration_ms?: number | null
+  llm_duration_ms?: number | null
+  llm_call_count?: number
+  llm_config?: {
+    model_name?: string | null
+    temperature?: number | null
+    max_tokens?: number | null
+  }
+  output?: {
+    output_raw_length?: number
+    output_raw_preview?: string | null
+    output_parsed_keys?: string[]
+    output_parsed_success?: boolean | null
+    output_parsed_type?: string | null
+  }
+  tool_calls?: Array<{
+    tool_name: string
+    tool_args?: Record<string, any>
+    success?: boolean
+    error?: string | null
+    result_length?: number
+    result_preview?: string | null
+    duration_ms?: number | null
+  }>
+  token_usage?: {
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+  }
+  validation?: {
+    validation_status?: string | null
+    validation_error?: string | null
+    validation_details?: Record<string, any> | null
+  } | null
+  success?: boolean
+  error_message?: string | null
+  error_type?: string | null
+}
+
+/**
+ * 执行轨迹详情（含 Prompt/输出全文）
+ */
+export interface ExecutionTraceDetail extends ExecutionTraceSummary {
+  prompts?: {
+    system_prompt_full?: string | null
+    user_prompt_full?: string | null
+    system_prompt_length?: number
+    user_prompt_length?: number
+  }
+  inputs?: {
+    input_keys?: string[]
+    input_lengths?: Record<string, number>
+  }
+  output?: ExecutionTraceSummary['output'] & {
+    output_raw_full?: string | null
+  }
+}
+
+/**
+ * 执行轨迹列表响应
+ */
+export interface ExecutionTraceListData {
+  task_id: string
+  count: number
+  total_tokens: number
+  failed_count: number
+  tool_calls_count: number
+  traces: ExecutionTraceSummary[]
+}
+
+/**
+ * 获取任务的执行轨迹列表
+ */
+export function getTaskTraces(taskId: string, limit?: number) {
+  return ApiClient.get<ExecutionTraceListData>(`/api/v2/tasks/${taskId}/traces`, limit ? { limit } : undefined)
+}
+
+/**
+ * 获取单条执行轨迹详情
+ */
+export function getTaskTraceDetail(taskId: string, traceId: string) {
+  return ApiClient.get<ExecutionTraceDetail>(`/api/v2/tasks/${taskId}/traces/${traceId}`)
+}
+
 /**
  * 任务类型中文名称映射
  */
