@@ -106,7 +106,9 @@ const licenseIconColor = computed(() => {
 const goToLicense = () => {
   // 🔧 京东云模式：不跳转授权页
   if (isJdyunMode) return
-  router.push('/settings/license')
+  // 社区版无授权体系（/settings/license 页面已随 Pro 剔除），
+  // 徽标改为跳转学习中心高级课程页
+  router.push('/learning/advanced')
 }
 
 const handleCommand = async (command: string) => {

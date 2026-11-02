@@ -26,17 +26,19 @@ export async function ensureFeatureAccess(
     return true
   }
 
+  // 社区版无授权体系（/settings/license 已随 Pro 剔除）：
+  // 未放行的功能提示后引导去学习中心，而不是跳 404
   try {
     await ElMessageBox.confirm(
-      options.message || '此功能为高级学员专属，请前往授权管理完成认证。',
+      options.message || '此功能当前版本不可用，可在学习中心了解完整功能。',
       options.title || '功能受限',
       {
-        confirmButtonText: options.confirmButtonText || '前往授权管理',
+        confirmButtonText: options.confirmButtonText || '前往学习中心',
         cancelButtonText: options.cancelButtonText || '稍后再说',
-        type: 'warning'
+        type: 'info'
       }
     )
-    await router.push(options.redirectTo || '/settings/license')
+    await router.push(options.redirectTo || '/learning')
   } catch {
     // 用户取消时不做额外处理
   }

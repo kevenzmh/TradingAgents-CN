@@ -20,7 +20,7 @@
                 <el-icon><TrendCharts /></el-icon>
                 股票数据批量导入
               </span>
-              <el-tag v-if="!isPro" type="warning" size="small">高级学员</el-tag>
+              <!-- 社区版无学员等级限制 -->
             </div>
           </template>
 
@@ -71,7 +71,7 @@
                 <el-icon><ChatDotRound /></el-icon>
                 社媒消息批量导入
               </span>
-              <el-tag v-if="!isPro" type="warning" size="small">高级</el-tag>
+              <!-- 社区版无学员等级限制 -->
             </div>
           </template>
 
@@ -113,17 +113,17 @@
     <!-- 高级学员权限提示 -->
     <el-alert
       v-if="!isPro"
-      type="warning"
+      type="info"
       :closable="false"
       show-icon
       style="margin-top: 20px;"
     >
       <template #title>
-        <strong>批量导入功能为高级学员专属</strong>
+        <strong>当前社区版本即为完整功能</strong>
       </template>
       <p>
-        您当前是初级学员，无法使用批量导入功能。
-        <router-link to="/settings/license">前往授权管理</router-link> 完成高级学员认证。
+        本项目为开源社区版，所有分析功能（单股/批量分析、组合研究、操作复盘等）均已开放，无学员等级限制。
+        <router-link to="/learning">前往学习中心</router-link> 了解完整用法。
       </p>
     </el-alert>
   </div>

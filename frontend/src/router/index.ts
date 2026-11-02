@@ -758,17 +758,16 @@ router.beforeEach(async (to, _from, next) => {
     try {
       const { useLicenseStore } = await import('@/stores/license')
       const licenseStore = useLicenseStore()
-      
+
       // 如果License状态未加载，先验证
       if (!licenseStore.licenseInfo) {
         await licenseStore.verifyLicense()
       }
-      
+
       if (!licenseStore.isPro) {
-        ElMessage.warning('此功能需要高级学员权限，请先认证')
-        NProgress.done()
-        next('/settings/license')
-        return
+        // 社区版无授权体系（isPro 恒 false、/settings/license 已随 Pro 剔除），
+        // requiresPro 路由仅剩历史 Pro 路径残留——放行而不是跳 404
+        console.warn('⚠️ 社区版 requiresPro 路由放行:', to.fullPath)
       }
     } catch (error) {
       console.error('检查License权限失败:', error)
@@ -839,11 +838,10 @@ router.beforeEach(async (to, _from, next) => {
       await licenseStore.verifyLicense()
     }
 
-    // 如果不是高级学员，显示提示并重定向到授权管理页面
+    // 社区版无授权体系（isPro 恒 false、/settings/license 已随 Pro 剔除）：
+    // proRoutes 前缀命中的历史路径放行，由各页面的空壳/降级组件接管
     if (!licenseStore.isPro) {
-      ElMessage.warning('此功能为高级学员专属，请先升级学员等级')
-      next('/settings/license')
-      return
+      console.warn('⚠️ 社区版 Pro 路由前缀放行:', to.fullPath)
     }
   }
 

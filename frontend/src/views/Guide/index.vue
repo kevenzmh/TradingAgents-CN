@@ -656,7 +656,9 @@ const goToAnalysis = () => {
 }
 
 const goToLicense = () => {
-  router.push('/settings/license')
+  // 社区版无授权体系（/settings/license 已随 Pro 剔除）；
+  // 激活步骤本身由 licenseSupported=false 隐藏，此处兜底改去学习中心
+  router.push('/learning')
 }
 </script>
 
