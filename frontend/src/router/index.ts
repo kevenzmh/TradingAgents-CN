@@ -110,6 +110,13 @@ const routes: RouteRecordRaw[] = [
         name: 'SingleAnalysis',
         component: () => import('@/views/Analysis/SingleAnalysis.vue')
       },
+      {
+        // 批量分析：原 Pro 分离保留位，社区版功能全开放后恢复
+        //（筛选页"批量分析"按钮依赖 name: 'BatchAnalysis' 路由跳转）
+        path: 'batch',
+        name: 'BatchAnalysis',
+        component: () => import('@/views/Analysis/BatchAnalysis.vue')
+      },
       // 批量分析（Pro）→ pro.routes.ts
       ...proAnalysisChildren,
       {

@@ -49,17 +49,45 @@ export const PRO_FEATURES = [
 
 export type ProFeature = typeof PRO_FEATURES[number]
 
-// 社区版免费放行的功能（与 core/licensing/community_stub.py FREE_ACCESS_FEATURES 对齐）
+// 社区版免费放行的功能 — 2026-11-02 语义切换：社区版即完整开源功能集，
+// Pro 分离计划中"付费解锁"的功能在社区版全部开放（后端 require_feature/
+// require_pro 均为放行透传，前端侧同步放行以消除残缺体验）
+// 与 core/licensing/community_stub.py FREE_ACCESS_FEATURES 对齐
 const FREE_ACCESS_FEATURES = new Set<ProFeature>([
   'portfolio_analysis',
-  'trade_review'
+  'trade_review',
+  'advanced_courses',
+  'email_notification',
+  'watchlist_groups',
+  'scheduled_analysis',
+  'batch_analysis',
+  'export_reports',
+  'trading_plan_check',
+  'workflow',
+  'workflow_tools',
+  'workflow_agents',
+  'prompt_templates'
 ])
 
-// 社区版固定授权信息（Free 档）
+// 社区版固定授权信息（Free 档 = 完整功能）
 const COMMUNITY_LICENSE_INFO: LicenseInfo = {
   email: '',
   plan: 'free',
-  features: ['portfolio_analysis', 'trade_review'],
+  features: [
+    'portfolio_analysis',
+    'trade_review',
+    'advanced_courses',
+    'email_notification',
+    'watchlist_groups',
+    'scheduled_analysis',
+    'batch_analysis',
+    'export_reports',
+    'trading_plan_check',
+    'workflow',
+    'workflow_tools',
+    'workflow_agents',
+    'prompt_templates'
+  ],
   device_registered: false,
   is_valid: true,
   offline_mode: false

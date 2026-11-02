@@ -26,6 +26,11 @@
       <template #title>单股研究</template>
     </el-menu-item>
 
+    <el-menu-item index="/analysis/batch">
+      <el-icon><DataAnalysis /></el-icon>
+      <template #title>批量分析</template>
+    </el-menu-item>
+
     <!-- Pro：批量分析（社区版发布时 navigation.pro.ts 整文件替换为空配置，菜单自动隐藏） -->
     <el-menu-item v-for="item in proTopLevelItems" :key="item.path" :index="item.path">
       <el-icon><DataAnalysis /></el-icon>

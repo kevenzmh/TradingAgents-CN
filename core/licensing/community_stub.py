@@ -55,8 +55,24 @@ COMMUNITY_TIER_FEATURES = LicenseFeatures(
     max_concurrent_executions=1,  # 最大并发执行数（单并发）
 )
 
-# 社区版免费放行的功能（与 app/services/license_service.py 的 FREE_ACCESS_FEATURES 对齐）
-FREE_ACCESS_FEATURES = {"portfolio_analysis", "trade_review"}
+# 社区版免费放行的功能 — 2026-11-02 语义切换：社区版即完整开源功能集，
+# Pro 分离计划中"付费解锁"的功能在社区版全部开放（require_feature/require_pro
+# 均已放行透传，此处对齐声明的功能集，保持前后端一致）
+FREE_ACCESS_FEATURES = {
+    "portfolio_analysis",
+    "trade_review",
+    "advanced_courses",
+    "email_notification",
+    "watchlist_groups",
+    "scheduled_analysis",
+    "batch_analysis",
+    "export_reports",
+    "trading_plan_check",
+    "workflow",
+    "workflow_tools",
+    "workflow_agents",
+    "prompt_templates",
+}
 
 # 社区版无 Pro 专属功能（Pro 功能靠发布管道物理剔除，不靠运行时门控）
 PRO_FEATURES: list[str] = []
@@ -86,8 +102,14 @@ class LicenseInfo(BaseModel):
 
 
 def _community_license_info(email: str = "") -> LicenseInfo:
-    """构造社区版授权信息（free 档、有效、无网络验证）"""
-    return LicenseInfo(email=email, plan="free", is_valid=True, error_message=None)
+    """构造社区版授权信息（free 档、有效、无网络验证、全功能开放）"""
+    return LicenseInfo(
+        email=email,
+        plan="free",
+        is_valid=True,
+        error_message=None,
+        features=sorted(FREE_ACCESS_FEATURES),
+    )
 
 
 # =============================================================================

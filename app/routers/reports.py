@@ -1,12 +1,14 @@
 """
 研究报告管理 API 路由
 """
+import json
 import os
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .auth_db import get_current_user
@@ -603,5 +605,151 @@ async def delete_report(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 导出下载端点（Pro 专属，export_reports 门控）已拆分至 reports_export.py
-# 见 docs/05-design/v3.0/v3.6.0-community-edition-separation-plan.md §5.2
+# 导出下载端点：社区版按开源语义直接开放（原拆分至 reports_export.py 的
+# Pro 门控已随 v3.6 社区分离计划废弃——前端 Reports/Dashboard/SingleAnalysis
+# 均已内置下载按钮，报告数据本就归用户所有）。
+# 实现移自 62126b65 的原始版本；markdown/json 免依赖，docx/pdf 依赖 pandoc
+# （app/utils/report_exporter.py，缺 pandoc 时返回 400 带安装指引）。
+
+
+@router.get("/{report_id}/download")
+async def download_report(
+    report_id: str,
+    format: str = Query("markdown", description="下载格式: markdown, json, pdf, docx"),
+    user: dict = Depends(get_current_user)
+):
+    """下载报告
+
+    支持的格式:
+    - markdown: Markdown 格式（默认）
+    - json: JSON 格式（包含完整数据）
+    - docx: Word 文档格式（需要 pandoc）
+    - pdf: PDF 格式（需要 pandoc 和 PDF 引擎）
+    """
+    try:
+        logger.info(f"📥 下载报告: {report_id}, 格式: {format}")
+
+        db = get_mongo_db()
+
+        # 查询报告（支持多种ID）
+        query = _build_report_query(report_id)
+        doc = await db.analysis_reports.find_one(query)
+
+        if not doc:
+            raise HTTPException(status_code=404, detail="报告不存在")
+
+        stock_symbol = doc.get("stock_symbol", "unknown")
+        analysis_date = doc.get("analysis_date", datetime.now().strftime("%Y-%m-%d"))
+
+        if format == "json":
+            # JSON格式下载
+            content = json.dumps(doc, ensure_ascii=False, indent=2, default=str)
+            filename = f"{stock_symbol}_{analysis_date}_report.json"
+            media_type = "application/json"
+
+            def generate():
+                yield content.encode('utf-8')
+
+            return StreamingResponse(
+                generate(),
+                media_type=media_type,
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+
+        elif format == "markdown":
+            # Markdown格式下载
+            reports = doc.get("reports", {})
+            content_parts = []
+
+            content_parts.append(f"# {stock_symbol} 分析报告")
+            content_parts.append(f"**分析日期**: {analysis_date}")
+            content_parts.append(f"**分析师**: {', '.join(doc.get('analysts', []))}")
+            content_parts.append(f"**研究深度**: {doc.get('research_depth', 1)}")
+            content_parts.append("")
+
+            if doc.get("summary"):
+                content_parts.append("## 执行摘要")
+                content_parts.append(doc["summary"])
+                content_parts.append("")
+
+            for module_name, module_content in reports.items():
+                if isinstance(module_content, str) and module_content.strip():
+                    content_parts.append(f"## {module_name}")
+                    content_parts.append(module_content)
+                    content_parts.append("")
+
+            content = "\n".join(content_parts)
+            filename = f"{stock_symbol}_{analysis_date}_report.md"
+            media_type = "text/markdown"
+
+            def generate():
+                yield content.encode('utf-8')
+
+            return StreamingResponse(
+                generate(),
+                media_type=media_type,
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+
+        elif format == "docx":
+            from app.utils.report_exporter import report_exporter
+
+            if not report_exporter.pandoc_available:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Word 导出功能不可用。请安装 pandoc: pip install pypandoc"
+                )
+
+            try:
+                docx_content = report_exporter.generate_docx_report(doc)
+                filename = f"{stock_symbol}_{analysis_date}_report.docx"
+
+                def generate():
+                    yield docx_content
+
+                return StreamingResponse(
+                    generate(),
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"❌ Word 文档生成失败: {e}")
+                raise HTTPException(status_code=500, detail=f"Word 文档生成失败: {str(e)}")
+
+        elif format == "pdf":
+            from app.utils.report_exporter import report_exporter
+
+            if not report_exporter.pandoc_available:
+                raise HTTPException(
+                    status_code=400,
+                    detail="PDF 导出功能不可用。请安装 pandoc 和 PDF 引擎（wkhtmltopdf 或 LaTeX）"
+                )
+
+            try:
+                pdf_content = report_exporter.generate_pdf_report(doc)
+                filename = f"{stock_symbol}_{analysis_date}_report.pdf"
+
+                def generate():
+                    yield pdf_content
+
+                return StreamingResponse(
+                    generate(),
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"❌ PDF 文档生成失败: {e}")
+                raise HTTPException(status_code=500, detail=f"PDF 文档生成失败: {str(e)}")
+
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的下载格式: {format}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 下载报告失败: {e}")
+        raise HTTPException(status_code=500, detail=f"下载报告失败: {str(e)}")

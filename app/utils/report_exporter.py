@@ -148,6 +148,19 @@ try:
         logger.info("💡 安装方法: https://wkhtmltopdf.org/downloads.html")
 except ImportError:
     logger.warning("⚠️ pdfkit 未安装")
+
+# 检查 markdown-pdf（第三引擎，纯 Python + PyMuPDF，Windows 友好——
+# WeasyPrint 在 Windows 缺 GTK 库、wkhtmltopdf 需单独装二进制，二者都常缺席）
+MARKDOWN_PDF_AVAILABLE = False
+MARKDOWN_PDF_ERROR = None
+
+try:
+    from markdown_pdf import MarkdownPdf, Section
+    MARKDOWN_PDF_AVAILABLE = True
+    logger.info("✅ markdown-pdf 可用（PDF 生成工具，第三引擎）")
+except Exception as e:
+    MARKDOWN_PDF_ERROR = str(e)
+    logger.warning(f"⚠️ markdown-pdf 不可用: {e}")
     logger.info("💡 安装方法: pip install pdfkit")
 except Exception as e:
     PDFKIT_ERROR = str(e)
@@ -162,11 +175,13 @@ class ReportExporter:
         self.pandoc_available = PANDOC_AVAILABLE
         self.weasyprint_available = WEASYPRINT_AVAILABLE
         self.pdfkit_available = PDFKIT_AVAILABLE
+        self.markdown_pdf_available = MARKDOWN_PDF_AVAILABLE
 
         logger.info("📋 ReportExporter 初始化:")
         logger.info(f"  - export_available: {self.export_available}")
         logger.info(f"  - pandoc_available: {self.pandoc_available}")
         logger.info(f"  - pdfkit_available: {self.pdfkit_available}")
+        logger.info(f"  - markdown_pdf_available: {self.markdown_pdf_available}")
 
     @staticmethod
     def _normalize_heading_text(text: str) -> str:
@@ -1025,6 +1040,30 @@ pre, code {
                 return self._generate_pdf_with_pdfkit(html_content)
             except Exception as e:
                 logger.error(f"❌ pdfkit 生成失败: {e}")
+                raise Exception(f"PDF 生成失败: {e}")
+
+        # 第三引擎：markdown-pdf（纯 Python，Windows 友好）
+        if self.markdown_pdf_available:
+            try:
+                logger.info("🎯 使用 markdown-pdf 生成 PDF（第三引擎）")
+                from markdown_pdf import MarkdownPdf, Section
+                import tempfile, os as _os
+                pdf = MarkdownPdf(toc_level=2)
+                # markdown-pdf 直接吃 Markdown 源（比 HTML 转换链路更短）
+                pdf.add_section(Section(md_content))
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                    tmp_path = tmp.name
+                pdf.save(tmp_path)
+                try:
+                    with open(tmp_path, "rb") as f:
+                        return f.read()
+                finally:
+                    try:
+                        _os.unlink(tmp_path)
+                    except OSError:
+                        pass
+            except Exception as e:
+                logger.error(f"❌ markdown-pdf 生成失败: {e}")
                 raise Exception(f"PDF 生成失败: {e}")
 
         # 如果都不可用，抛出错误
