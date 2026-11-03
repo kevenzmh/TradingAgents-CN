@@ -162,6 +162,16 @@ try:
 except ImportError:  # 社区版：app/pro_routers.py 已被发布管道整体剔除
     PRO_ROUTERS = []
 
+# 社区版功能补齐路由（2026-11-03）：原 Pro 系统级剔除中可独立恢复的能力，
+# 按社区版语义（全开放）重建后在此注册；import 失败自动跳过不影响启动。
+try:
+    from app.pro.routers import trading_systems as trading_systems_router
+    COMMUNITY_ROUTERS.append(
+        (trading_systems_router.router, "trading_systems", {"tags": ["trading-systems"]})
+    )
+except Exception as _ts_exc:  # pragma: no cover - 防御：模块缺陷不阻塞应用启动
+    logger.warning(f"⚠️ 交易计划路由注册失败（不影响启动）: {_ts_exc}")
+
 
 def _register_router_with_log(app_instance, router, router_name: str, kwargs: dict) -> bool:
     """注册路由并记录日志（自 app/main.py 原样搬迁）"""
