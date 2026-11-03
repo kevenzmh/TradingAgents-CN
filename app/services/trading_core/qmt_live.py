@@ -82,6 +82,46 @@ class QMTLiveAdapter:
 
     # ---- 连接 ----
 
+    def _connect_with_retry(self, attempts: int = 3) -> Any:
+        """建立连接并带重试（P0-3）。
+
+        **只重试连接建立阶段**。此时尚未向柜台发出任何委托，
+        重试是幂等的、安全的。
+
+        绝不对 order_stock() 重试——见 execute() 中的注释。
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._connect()
+            except QMTNotReady as exc:
+                last_exc = exc
+                msg = str(exc)
+                # 配置类错误不可通过重试解决，立即失败
+                if "未配置" in msg or "xtquant 不可用" in msg or "未找到 QMT userdata" in msg:
+                    raise
+                if attempt >= attempts:
+                    raise
+                backoff = min(2 ** (attempt - 1), 5)
+                logger.warning(
+                    "[QMT实盘] 连接失败(第 %d/%d 次)，%ds 后重试: %s",
+                    attempt, attempts, backoff, exc,
+                )
+                time.sleep(backoff)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= attempts:
+                    raise
+                backoff = min(2 ** (attempt - 1), 5)
+                logger.warning(
+                    "[QMT实盘] 连接异常(第 %d/%d 次)，%ds 后重试: %s",
+                    attempt, attempts, backoff, exc,
+                )
+                time.sleep(backoff)
+        if last_exc:
+            raise last_exc
+        raise QMTNotReady("连接失败（未知原因）")
+
     def _connect(self):
         """建立一次性交易会话。调用方负责 finally trader.stop()。"""
         xttrader = _get_xttrader()
@@ -146,13 +186,40 @@ class QMTLiveAdapter:
 
         trader = None
         try:
-            trader = self._connect()
+            # P0-3：连接阶段可安全重试（尚未发出委托，重试幂等）
+            trader = self._connect_with_retry()
             account = self._account()
-            seq = trader.order_stock(
-                account, xt_code, order_type, volume, price_type,
-                price if price_type == PRICE_TYPE_FIX else 0,
-                "", remark,
-            )
+
+            # ⚠️ 关键安全判断：以下是"不可重试区"
+            #
+            # order_stock() 一旦被调用，柜台**可能已经受理**。此时若抛异常
+            # （网络中断、客户端崩溃、超时），我们无法得知委托是否已进入
+            # 柜台。盲目重试会导致**重复下单**（双倍持仓/卖出穿仓）。
+            #
+            # 因此：
+            # - 这里绝不包裹 @retry / 循环重试
+            # - 异常一律返回 status="unknown"，由对账（sync.reconcile）
+            #   向柜台核实真实状态，绝不自行假设成功或失败
+            order_submitted_attempted = True
+            try:
+                seq = trader.order_stock(
+                    account, xt_code, order_type, volume, price_type,
+                    price if price_type == PRICE_TYPE_FIX else 0,
+                    "", remark,
+                )
+            except Exception as submit_exc:
+                logger.error(
+                    "[QMT实盘] ⚠️ 委托调用异常，委托状态未知（可能已进柜台）: "
+                    "信号=%s 代码=%s 数量=%d 错误=%s。"
+                    "标记 unknown，交由对账向柜台核实，绝不自动重试。",
+                    order.get("signal_id"), xt_code, volume, submit_exc, exc_info=True,
+                )
+                return {
+                    "status": "unknown",
+                    "error": f"委托调用异常，状态未知需对账核实: {submit_exc}",
+                    "requires_reconcile": True,
+                }
+
             if seq == _REJECT or seq < 0:
                 return {"status": "failed", "error": f"柜台拒单（返回 {seq}）："
                         f"检查资金/持仓/交易权限/委托价"}
@@ -165,8 +232,8 @@ class QMTLiveAdapter:
         except QMTNotReady as exc:
             return {"status": "failed", "error": str(exc)}
         except Exception as exc:
-            logger.error("[QMT实盘] 委托异常: %s", exc, exc_info=True)
-            return {"status": "failed", "error": f"委托异常: {exc}"}
+            logger.error("[QMT实盘] 委托前置异常: %s", exc, exc_info=True)
+            return {"status": "failed", "error": f"委托前置异常: {exc}"}
         finally:
             if trader is not None:
                 try:
@@ -249,10 +316,12 @@ class QMTLiveAdapter:
 
 
 def validate_qmt_live_readiness() -> Dict[str, Any]:
-    """live 模式启动自检：配置完整性 + 终端连通性一次性探测。
+    """live 模式启动自检：P0-5 完整校验。
 
     在 TRADING_MODE=live 且 LIVE_TRADING_ENABLED=true 时由启动流程调用；
     检查不过应拒绝启动交易通道（workflows 继续跑，交易闭环禁用）。
+
+    P0-5 增强：增加账户查询验证、资金可见性验证，确保接单后立即可用。
     """
     from app.core.config import get_settings
 
@@ -271,16 +340,51 @@ def validate_qmt_live_readiness() -> Dict[str, Any]:
 
     adapter = QMTLiveAdapter()
     if not problems:
-        # 全量探测：真实连接一次交易终端
+        # P0-5 增强：全量探测（连接 + 账户查询）
+        trader = None
         try:
             trader = adapter._connect()
-            trader.stop()
             checks["terminal_connected"] = True
+
+            # 验证账户可查（资金/持仓）
+            account = adapter._account()
+            try:
+                assets = trader.query_stock_asset(account)
+                if assets:
+                    cash = float(getattr(assets, "cash", 0) or 0)
+                    checks["account_verified"] = True
+                    checks["account_cash_sample"] = round(cash, 2)
+                else:
+                    problems.append("账户资金查询返回空（账户未登录或权限不足）")
+                    checks["account_verified"] = False
+            except Exception as exc:
+                problems.append(f"账户查询失败: {exc}")
+                checks["account_verified"] = False
+
+            # 验证持仓可查（确保风控依赖的数据源可用）
+            try:
+                positions = trader.query_stock_positions(account) or []
+                checks["position_query_ok"] = True
+                checks["position_count"] = len(positions)
+            except Exception as exc:
+                problems.append(f"持仓查询失败: {exc}")
+                checks["position_query_ok"] = False
+
         except Exception as exc:
             problems.append(f"交易终端连接失败: {exc}")
             checks["terminal_connected"] = False
+            checks["account_verified"] = False
+            checks["position_query_ok"] = False
+        finally:
+            if trader is not None:
+                try:
+                    trader.stop()
+                except Exception:
+                    pass
     else:
         checks["terminal_connected"] = False
+        checks["account_verified"] = False
+        checks["position_query_ok"] = False
 
     checks["ready"] = not problems
     checks["problems"] = problems

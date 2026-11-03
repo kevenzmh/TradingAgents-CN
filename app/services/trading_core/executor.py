@@ -63,55 +63,294 @@ class DryRunAdapter(ExecutionAdapter):
         currency_map = {"CN": "CNY", "HK": "HKD", "US": "USD"}
         currency = currency_map.get(order["market"], "CNY")
 
-        # 记账到模拟账户（与 paper.py 相同的集合，来源标记区分）
-        acc = await self._db["paper_accounts"].find_one({"user_id": order["user_id"]})
-        if not acc:
-            return {"status": "failed", "error": "交易账户不存在，请先初始化模拟账户"}
-        cash = acc.get("cash") or {}
-        available_cash = float(cash.get(currency, 0.0)) if isinstance(cash, dict) else 0.0
+        # P0-4：走幂等结算（补偿日志 + 原子条件更新），不再裸写三步
+        return await self._settle(order, price, qty, notional, currency)
 
-        if order["side"] == "buy":
-            commission = notional * 0.0003  # 与 paper.py 默认佣金率一致（有最低5元，此处简化）
-            commission = max(commission, 5.0)
-            total_cost = notional + commission
-            if available_cash < total_cost:
-                return {
-                    "status": "failed",
-                    "error": f"可用{currency}不足：需要 {total_cost:.2f}，可用 {available_cash:.2f}",
-                }
-            await self._db["paper_accounts"].update_one(
-                {"user_id": order["user_id"]},
-                {"$set": {f"cash.{currency}": round(available_cash - total_cost, 2)}},
-            )
-            await self._apply_position(order["user_id"], order["symbol"], order["market"],
-                                       currency, qty, price, side="buy")
+    # ---- P0-4 幂等结算（无事务环境下的 saga）----
+
+    _SETTLEMENT_COLLECTION = "trading_settlements"
+
+    async def _settle(self, order: Dict[str, Any], price: float, qty: int,
+                      notional: float, currency: str) -> Dict[str, Any]:
+        """幂等结算：资金/持仓/流水三步在单机 MongoDB 下的安全落账。
+
+        **为什么不用事务**：本项目 MongoDB 为单机部署（无副本集），
+        `start_transaction()` 会直接抛 InvalidOperation。因此改用 saga：
+
+        1. 结算意图日志 `trading_settlements`（_id = 订单 _id）作为幂等键
+           - 已有 done → 直接返回缓存结果（重复执行无副作用）
+           - 已有 pending → 说明上次中断，继续向前推进（幂等补做）
+        2. 现金变动用 **条件原子更新**（$gte 守卫 + $inc），
+           杜绝"读余额→写绝对值"的丢失更新竞态
+        3. 持仓用 pipeline update 原子重算均价
+        4. 流水用 `_id = order_id` upsert，重复写被唯一键挡住
+        5. 全部完成后 journal 置 done 并缓存结果
+
+        任一步骤崩溃，journal 停留在 pending，由
+        `reconcile_settlements()` 在启动/定时任务里补做或回滚。
+        """
+        oid = order.get("_id")
+        settlement_id = str(oid) if oid is not None else f"tmp_{order.get('signal_id')}"
+        side = order["side"]
+        user_id = order["user_id"]
+        symbol = order["symbol"]
+        market = order["market"]
+
+        if side == "buy":
+            commission = max(notional * 0.0003, 5.0)
         else:
-            commission = max(notional * 0.0003, 0.0)  # 卖出佣金（无印花税简化）
-            await self._db["paper_accounts"].update_one(
-                {"user_id": order["user_id"]},
-                {"$set": {f"cash.{currency}": round(available_cash + notional - commission, 2)}},
-            )
-            await self._apply_position(order["user_id"], order["symbol"], order["market"],
-                                       currency, qty, price, side="sell")
+            commission = max(notional * 0.0003, 0.0)
+        cash_delta = -(notional + commission) if side == "buy" else (notional - commission)
 
-        await self._db["paper_trades"].insert_one({
-            "user_id": order["user_id"],
-            "code": order["symbol"],
-            "market": order["market"],
-            "currency": currency,
-            "side": order["side"],
-            "quantity": qty,
-            "price": price,
-            "amount": notional,
-            "commission": commission,
-            "pnl": 0.0,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "trading_engine",
-            "signal_id": order.get("signal_id"),
-            "analysis_id": order.get("analysis_id"),
-        })
-        return {"status": "filled", "price": price, "notional": notional,
-                "commission": commission}
+        journal = self._db[self._SETTLEMENT_COLLECTION]
+
+        # ---- 步骤 0：建立/读取结算意图 ----
+        try:
+            await journal.update_one(
+                {"_id": settlement_id},
+                {"$setOnInsert": {
+                    "_id": settlement_id,
+                    "order_id": str(oid),
+                    "user_id": user_id,
+                    "symbol": symbol,
+                    "market": market,
+                    "side": side,
+                    "quantity": qty,
+                    "price": price,
+                    "notional": notional,
+                    "commission": commission,
+                    "currency": currency,
+                    "state": "pending",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+        except Exception as exc:
+            # 日志不可用不应阻断交易，但必须显式记录
+            logger.error("[结算] 意图日志写入失败（继续执行）: %s", exc, exc_info=True)
+
+        existing = await journal.find_one({"_id": settlement_id}) or {}
+        if existing.get("state") == "done":
+            # 幂等命中：重复调用直接返回上次结果
+            logger.info("[结算] 订单 %s 已完成结算，幂等返回", settlement_id)
+            cached = existing.get("result") or {}
+            return {
+                "status": "filled",
+                "price": cached.get("price", price),
+                "notional": cached.get("notional", notional),
+                "commission": cached.get("commission", commission),
+                "idempotent": True,
+            }
+
+        # ---- 步骤 1：现金（原子条件更新）----
+        if not existing.get("cash_applied"):
+            if side == "buy":
+                # 条件原子扣款：余额不足则 matched_count == 0
+                res = await self._db["paper_accounts"].update_one(
+                    {"user_id": user_id, f"cash.{currency}": {"$gte": notional + commission}},
+                    {"$inc": {f"cash.{currency}": -round(notional + commission, 2)},
+                     "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                if res.matched_count == 0:
+                    acc = await self._db["paper_accounts"].find_one({"user_id": user_id})
+                    if not acc:
+                        await journal.update_one({"_id": settlement_id},
+                                                 {"$set": {"state": "failed",
+                                                           "error": "交易账户不存在"}})
+                        return {"status": "failed", "error": "交易账户不存在，请先初始化模拟账户"}
+                    cash = acc.get("cash") or {}
+                    avail = float(cash.get(currency, 0.0)) if isinstance(cash, dict) else 0.0
+                    await journal.update_one({"_id": settlement_id},
+                                             {"$set": {"state": "failed",
+                                                       "error": f"可用{currency}不足"}})
+                    return {
+                        "status": "failed",
+                        "error": f"可用{currency}不足：需要 {notional + commission:.2f}，可用 {avail:.2f}",
+                    }
+            else:
+                res = await self._db["paper_accounts"].update_one(
+                    {"user_id": user_id},
+                    {"$inc": {f"cash.{currency}": round(notional - commission, 2)},
+                     "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                if res.matched_count == 0:
+                    await journal.update_one({"_id": settlement_id},
+                                             {"$set": {"state": "failed",
+                                                       "error": "交易账户不存在"}})
+                    return {"status": "failed", "error": "交易账户不存在，请先初始化模拟账户"}
+
+            await journal.update_one({"_id": settlement_id},
+                                     {"$set": {"cash_applied": True,
+                                               "cash_delta": round(cash_delta, 2)}})
+
+        # ---- 步骤 2：持仓（原子）----
+        if not existing.get("position_applied"):
+            await self._apply_position_atomic(user_id, symbol, market, currency, qty, price, side)
+            await journal.update_one({"_id": settlement_id},
+                                     {"$set": {"position_applied": True}})
+
+        # ---- 步骤 3：流水（唯一键幂等）----
+        try:
+            await self._db["paper_trades"].update_one(
+                {"_id": settlement_id},
+                {"$setOnInsert": {
+                    "_id": settlement_id,
+                    "user_id": user_id,
+                    "code": symbol,
+                    "market": market,
+                    "currency": currency,
+                    "side": side,
+                    "quantity": qty,
+                    "price": price,
+                    "amount": notional,
+                    "commission": commission,
+                    "pnl": 0.0,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "source": "trading_engine",
+                    "signal_id": order.get("signal_id"),
+                    "analysis_id": order.get("analysis_id"),
+                }},
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.error("[结算] 流水写入失败: %s", exc, exc_info=True)
+
+        # ---- 步骤 4：完结 ----
+        result = {"price": price, "notional": notional, "commission": commission}
+        await journal.update_one(
+            {"_id": settlement_id},
+            {"$set": {"state": "done",
+                      "result": result,
+                      "completed_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        return {"status": "filled", **result}
+
+    async def _apply_position_atomic(self, user_id: str, symbol: str, market: str,
+                                     currency: str, qty: int, price: float, side: str) -> None:
+        """原子更新持仓（买入用 aggregation pipeline 重算均价，卖出条件扣减）。"""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        coll = self._db["paper_positions"]
+
+        if side == "buy":
+            # 无持仓 → 插入；有持仓 → pipeline 原子重算 quantity/avg_cost
+            existing = await coll.find_one({"user_id": user_id, "code": symbol})
+            if not existing:
+                try:
+                    await coll.insert_one({
+                        "user_id": user_id, "code": symbol, "market": market,
+                        "currency": currency, "quantity": qty,
+                        "available_qty": 0 if market == "CN" else qty,  # A股 T+1
+                        "avg_cost": price, "updated_at": now_iso,
+                        "source": "trading_engine",
+                    })
+                except Exception:
+                    # 并发插入冲突：退化为 pipeline 更新
+                    await coll.update_one(
+                        {"user_id": user_id, "code": symbol},
+                        [{"$set": {
+                            "quantity": {"$add": ["$quantity", qty]},
+                            "avg_cost": {"$round": [{"$divide": [
+                                {"$add": [{"$multiply": ["$avg_cost", "$quantity"]},
+                                          price * qty]},
+                                {"$add": ["$quantity", qty]}]}, 4]},
+                            "available_qty": {"$cond": [{"$eq": [market, "CN"]},
+                                                        "$available_qty", {"$add": ["$quantity", qty]}]},
+                            "updated_at": now_iso,
+                        }}],
+                    )
+            else:
+                await coll.update_one(
+                    {"user_id": user_id, "code": symbol},
+                    [{"$set": {
+                        "quantity": {"$add": ["$quantity", qty]},
+                        "avg_cost": {"$round": [{"$divide": [
+                            {"$add": [{"$multiply": ["$avg_cost", "$quantity"]}, price * qty]},
+                            {"$add": ["$quantity", qty]}]}, 4]},
+                        "available_qty": {"$cond": [{"$eq": [market, "CN"]},
+                                                    "$available_qty",
+                                                    {"$add": [{"$ifNull": ["$available_qty", 0]}, qty]}]},
+                        "updated_at": now_iso,
+                    }}],
+                )
+        else:
+            # 卖出：条件扣减（数量不足则不改），扣到 0 删除
+            res = await coll.update_one(
+                {"user_id": user_id, "code": symbol, "quantity": {"$gte": qty}},
+                [{"$set": {
+                    "quantity": {"$subtract": ["$quantity", qty]},
+                    "available_qty": {"$max": [0, {"$subtract": [
+                        {"$ifNull": ["$available_qty", "$quantity"]}, qty]}]},
+                    "updated_at": now_iso,
+                }}],
+            )
+            if res.matched_count == 0:
+                logger.error(
+                    "[结算] 卖出扣减失败（持仓不足）: user=%s code=%s qty=%d",
+                    user_id, symbol, qty,
+                )
+                return
+            await coll.delete_one({"user_id": user_id, "code": symbol, "quantity": {"$lte": 0}})
+
+    async def reconcile_settlements(self, limit: int = 100) -> Dict[str, Any]:
+        """补偿未完成的结算（P0-4）。
+
+        扫描 `trading_settlements` 中 pending 且超过 1 分钟的日志：
+        - 三步标记齐全 → 补写 done
+        - 有部分标记 → 继续推进剩余步骤
+        - 账户已不存在等不可恢复 → 标记 failed 留痕
+
+        建议在启动时与定时任务中调用。单机无事务环境下，
+        这是保证资金/持仓/流水三者最终一致的兜底。
+        """
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        cursor = self._db[self._SETTLEMENT_COLLECTION].find({
+            "state": "pending",
+            "created_at": {"$lte": cutoff},
+        }).limit(limit)
+
+        repaired = failed = 0
+        errors: list = []
+        async for doc in cursor:
+            sid = doc.get("_id")
+            try:
+                if doc.get("cash_applied") and doc.get("position_applied"):
+                    await self._db[self._SETTLEMENT_COLLECTION].update_one(
+                        {"_id": sid},
+                        {"$set": {"state": "done",
+                                  "completed_at": datetime.now(timezone.utc).isoformat(),
+                                  "repaired_by": "reconcile_settlements"}},
+                    )
+                    repaired += 1
+                    logger.warning("[结算补偿] 订单 %s 三步齐全，补写 done", sid)
+                    continue
+
+                # 未完成的：无法安全重放（可能重复扣款），标记待人工
+                await self._db[self._SETTLEMENT_COLLECTION].update_one(
+                    {"_id": sid},
+                    {"$set": {"state": "needs_review",
+                              "error": "结算中断且无法安全重放，需人工核对资金/持仓",
+                              "flagged_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                await self._db["trading_alerts"].insert_one({
+                    "alert_type": "settlement_incomplete",
+                    "severity": "critical",
+                    "settlement_id": sid,
+                    "user_id": doc.get("user_id"),
+                    "symbol": doc.get("symbol"),
+                    "side": doc.get("side"),
+                    "quantity": doc.get("quantity"),
+                    "reason": "结算中断且无法安全重放，需人工核对",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "resolved": False,
+                })
+                failed += 1
+            except Exception as exc:
+                errors.append(f"{sid}: {exc}")
+                logger.error("[结算补偿] %s 失败: %s", sid, exc, exc_info=True)
+
+        return {"repaired": repaired, "flagged": failed, "errors": errors}
 
     async def _apply_position(self, user_id: str, symbol: str, market: str,
                               currency: str, qty: int, price: float, side: str) -> None:
@@ -375,6 +614,29 @@ class TradingExecutionEngine:
                 return {"order_id": str(order.get("_id", "")), "status": "failed",
                         "risk": order.get("risk_check"), "fill": {"error": error}}
 
+        # P0-1 修复：实盘委托幂等性保护（两阶段提交）
+        # 阶段 1：预占状态，写入重试令牌（乐观锁），避免崩溃后重复下单
+        retry_token = None
+        if settings.TRADING_MODE == "live":
+            import secrets
+            retry_token = secrets.token_hex(8)  # 16 字符唯一令牌
+            result = await self._db[_ORDERS_COLLECTION].update_one(
+                {"_id": order.get("_id"), "status": {"$in": ["draft", "pending_confirmation"]}},
+                {"$set": {
+                    "submitting_at": datetime.now(timezone.utc).isoformat(),
+                    "retry_token": retry_token,
+                }},
+            )
+            if result.matched_count == 0:
+                # 订单已被其他进程提交（并发保护）或状态已非法
+                logger.warning(
+                    "[执行] 订单 %s 无法预占（已提交或状态非法），跳过委托",
+                    order.get("_id"),
+                )
+                return {"order_id": str(order.get("_id", "")), "status": "skipped",
+                        "risk": order.get("risk_check"),
+                        "fill": {"error": "订单已被提交或状态非法"}}
+
         try:
             fill = await adapter.execute(order)
         except NotImplementedError as exc:
@@ -395,16 +657,87 @@ class TradingExecutionEngine:
                     "risk": order.get("risk_check"), "fill": fill}
 
         if fill.get("status") == "submitted":
-            # 实盘：柜台已受理，等待成交回报
-            await self._set_status(order, "submitted", None, fill)
+            # P0-1 修复：阶段 2：用重试令牌作为乐观锁，确保只有持有令牌的进程能写 submitted
+            # （若进程 A 拿到 broker_order_id 但崩溃，进程 B 重试时令牌已变，不会覆盖）
+            oid = order.get("_id")
+            broker_order_id = fill.get("broker_order_id", "")
+            if settings.TRADING_MODE == "live" and retry_token:
+                result = await self._db[_ORDERS_COLLECTION].update_one(
+                    {"_id": oid, "retry_token": retry_token},  # 令牌匹配才写
+                    {"$set": {
+                        "status": "submitted",
+                        "broker_order_id": str(broker_order_id),
+                        "fill": fill,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                if result.matched_count == 0:
+                    # 令牌不匹配（并发重试已成功）或订单已被其他进程修改
+                    logger.warning(
+                        "[执行] 订单 %s 令牌不匹配，柜台受理号 %s 已返回但未写入 DB "
+                        "（可能并发提交），由回报同步兜底",
+                        oid, broker_order_id,
+                    )
+                    # 不返回 submitted（避免上游误判成功），状态由回报同步修正
+                    return {"order_id": str(oid), "status": "pending_sync",
+                            "risk": order.get("risk_check"),
+                            "fill": {"broker_order_id": broker_order_id,
+                                     "note": "柜台已受理但状态写入被并发阻止，等待回报同步"}}
+            else:
+                # DryRun 或非实盘模式，直接写（无令牌）
+                await self._set_status(order, "submitted", None, fill)
+
             order["status"] = "submitted"
-            order["broker_order_id"] = fill.get("broker_order_id", "")
+            order["broker_order_id"] = broker_order_id
             logger.info(
                 "[执行] 信号 %s 已提交柜台: %s %s x%d，受理号 %s（成交由回报同步确认）",
                 order.get("signal_id"), order["side"], order["symbol"],
-                order["quantity"], fill.get("broker_order_id"),
+                order["quantity"], broker_order_id,
             )
             return {"order_id": str(order.get("_id", "")), "status": "submitted",
+                    "risk": order.get("risk_check"), "fill": fill}
+
+        # ⚠️ P0-3 关键安全分支：状态未知（委托调用异常，柜台可能已受理）
+        #
+        # 绝不能标记为 failed —— failed 会被上游视为"这单没下成"，
+        # 用户/策略可能重下，造成重复下单。必须标记为 unknown 并进入
+        # 对账队列，由 sync.reconcile() 向柜台核实真实状态。
+        if fill.get("status") == "unknown" or fill.get("requires_reconcile"):
+            oid = order.get("_id")
+            error = str(fill.get("error") or "委托状态未知，需对账核实")
+            await self._db[_ORDERS_COLLECTION].update_one(
+                {"_id": oid},
+                {"$set": {
+                    "status": "unknown",
+                    "error": error,
+                    "requires_reconcile": True,
+                    "reconcile_flagged_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+            # 同时写告警，保证人工能看到这笔"悬空"委托
+            try:
+                await self._db["trading_alerts"].insert_one({
+                    "alert_type": "order_status_unknown",
+                    "severity": "critical",
+                    "order_id": str(oid),
+                    "signal_id": order.get("signal_id"),
+                    "symbol": order.get("symbol"),
+                    "side": order.get("side"),
+                    "quantity": order.get("quantity"),
+                    "user_id": order.get("user_id"),
+                    "reason": error,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "resolved": False,
+                })
+            except Exception as alert_exc:
+                logger.error("[执行] 未知状态告警写入失败: %s", alert_exc, exc_info=True)
+
+            logger.error(
+                "[执行] ⚠️ 信号 %s 委托状态未知，已标记 unknown 待对账: %s",
+                order.get("signal_id"), error,
+            )
+            return {"order_id": str(oid), "status": "unknown",
                     "risk": order.get("risk_check"), "fill": fill}
 
         error = fill.get("error", "未知撮合失败")

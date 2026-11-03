@@ -57,11 +57,16 @@ class FakeSyncDB:
 
     def __init__(self, orders: List[Dict[str, Any]]):
         self.orders = orders
+        self.alerts: List[Dict[str, Any]] = []
+        self._since_store: Dict[str, List[Dict[str, Any]]] = {}
 
     def __getitem__(self, name):
-        if name != "trading_orders":
-            raise KeyError(name)
-        return self
+        # P0-2：对账会写 trading_alerts 告警集合，替身需一并支持
+        if name == "trading_orders":
+            return self
+        if name == "trading_alerts":
+            return _AlertCollection(self.alerts)
+        raise KeyError(name)
 
     def find(self, query=None, *a, **k):
         wanted = (query or {}).get("status", {"$in": []})
@@ -87,6 +92,17 @@ class FakeSyncDB:
                     o[k] = v
                 return
         raise AssertionError(f"update_one 未找到订单: {query}")
+
+
+class _AlertCollection:
+    """trading_alerts 集合替身（仅 insert_one）。"""
+
+    def __init__(self, store: List[Dict[str, Any]]):
+        self._store = store
+
+    async def insert_one(self, doc: Dict[str, Any]):
+        self._store.append(dict(doc))
+        return type("R", (), {"inserted_id": doc.get("_id")})
 
 
 class TestSyncOnce:

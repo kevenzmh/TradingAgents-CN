@@ -78,18 +78,28 @@ class FakeCollection:
         self._store.data.setdefault(self._name, []).append(doc)
         return type("R", (), {"inserted_id": oid})
 
-    async def update_one(self, query: Dict, update: Dict, upsert: bool = False):
+    async def update_one(self, query: Dict, update, upsert: bool = False):
+        """支持普通更新和 aggregation pipeline update（P0-4 修复需要）。"""
         docs = self._store.data.setdefault(self._name, [])
         for d in docs:
             if _match(d, query):
-                _apply_update(d, update)
+                # Pipeline update: update 是 list，每个元素是 {"$set": {...}}
+                if isinstance(update, list):
+                    _apply_pipeline_update(d, update)
+                else:
+                    _apply_update(d, update)
                 return type("R", (), {"matched_count": 1})
         if upsert:
             doc = {k: v for k, v in query.items() if k not in ("_id",)}
             if "_id" in query:
                 doc["_id"] = query["_id"]
-            _apply_update(doc, update)
+            if isinstance(update, list):
+                _apply_pipeline_update(doc, update)
+            else:
+                # 新建文档时必须应用 $setOnInsert（P0-4 流水写入依赖此语义）
+                _apply_update(doc, update, inserting=True)
             docs.append(doc)
+            return type("R", (), {"matched_count": 0})
         return type("R", (), {"matched_count": 0})
 
     async def delete_one(self, query: Dict):
@@ -105,26 +115,64 @@ def _copy_id(d):
     return dict(d)
 
 
+def _get_path(doc: Dict, path: str):
+    """按点路径取值，如 cash.CNY → doc["cash"]["CNY"]。路径不存在返回 None。"""
+    cur = doc
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
 def _match(doc: Dict, query: Dict) -> bool:
     for k, v in query.items():
-        if k not in doc:
+        # 点路径取值（P0-4：条件更新守卫 "cash.CNY": {"$gte": ...}）
+        dv = _get_path(doc, k)
+        if dv is None and k not in doc:
+            # 字段完全不存在：$ne / $exists:False 之外一律不匹配
+            if isinstance(v, dict) and ("$ne" in v or v.get("$exists") is False):
+                continue
             return False
-        dv = doc[k]
-        if isinstance(v, dict) and "$gt" in v:
-            if not (dv > v["$gt"]):
-                return False
-        elif isinstance(v, dict):
+        if isinstance(v, dict):
             for op, val in v.items():
-                if op == "$gte" and not dv >= val:
-                    return False
+                if op == "$gte":
+                    if dv is None or not (dv >= val):
+                        return False
+                elif op == "$gt":
+                    if dv is None or not (dv > val):
+                        return False
+                elif op == "$lte":
+                    if dv is None or not (dv <= val):
+                        return False
+                elif op == "$lt":
+                    if dv is None or not (dv < val):
+                        return False
+                elif op == "$in":
+                    if dv not in val:
+                        return False
+                elif op == "$ne":
+                    if dv == val:
+                        return False
+                elif op == "$exists":
+                    exists = (k in doc) or (_get_path(doc, k) is not None)
+                    if bool(val) != exists:
+                        return False
         elif dv != v:
             return False
     return True
 
 
-def _apply_update(doc: Dict, update: Dict):
+def _apply_update(doc: Dict, update: Dict, inserting: bool = False):
+    """应用更新操作符。
+
+    inserting=True 时（upsert 新建文档）额外应用 $setOnInsert，
+    与 MongoDB 语义一致（$setOnInsert 只在插入时生效）。
+    """
     for op, fields in update.items():
-        if op == "$set":
+        if op in ("$set", "$setOnInsert"):
+            if op == "$setOnInsert" and not inserting:
+                continue  # 已存在文档：$setOnInsert 不生效
             for k, v in fields.items():
                 # MongoDB 点路径语义：cash.CNY → doc["cash"]["CNY"]
                 if "." in k:
@@ -145,6 +193,85 @@ def _apply_update(doc: Dict, update: Dict):
                     target[parts[-1]] = target.get(parts[-1], 0) + v
                 else:
                     doc[k] = doc.get(k, 0) + v
+
+
+def _eval_expr(doc: Dict, expr):
+    """求值 aggregation 表达式（最小子集：字段引用 / 字面量 / 运算符）。"""
+    if isinstance(expr, str) and expr.startswith("$") and not expr.startswith("$$"):
+        # 字段引用 "$quantity"
+        val = _get_path(doc, expr[1:])
+        return 0 if val is None else val
+    if isinstance(expr, dict):
+        if len(expr) != 1:
+            # 多键 dict 视为字面量对象
+            return expr
+        (op, arg), = expr.items()
+        if op == "$add":
+            return sum(_eval_expr(doc, a) for a in arg)
+        if op == "$subtract":
+            return _eval_expr(doc, arg[0]) - _eval_expr(doc, arg[1])
+        if op == "$multiply":
+            out = 1
+            for a in arg:
+                out *= _eval_expr(doc, a)
+            return out
+        if op == "$divide":
+            denom = _eval_expr(doc, arg[1])
+            return (_eval_expr(doc, arg[0]) / denom) if denom else 0
+        if op == "$round":
+            value = _eval_expr(doc, arg[0])
+            places = int(arg[1]) if len(arg) > 1 else 0
+            return round(value, places)
+        if op == "$max":
+            return max(_eval_expr(doc, a) for a in arg)
+        if op == "$min":
+            return min(_eval_expr(doc, a) for a in arg)
+        if op == "$ifNull":
+            val = _eval_expr(doc, arg[0])
+            return _eval_expr(doc, arg[1]) if val is None else val
+        if op == "$cond":
+            # {"$cond": [cond, then, else]} 或 {"if":..,"then":..,"else":..}
+            if isinstance(arg, list):
+                cond, then_v, else_v = arg
+                return _eval_expr(doc, then_v) if _eval_expr(doc, cond) else _eval_expr(doc, else_v)
+            cond = _eval_expr(doc, arg.get("if"))
+            return _eval_expr(doc, arg.get("then")) if cond else _eval_expr(doc, arg.get("else"))
+        if op == "$eq":
+            return _eval_expr(doc, arg[0]) == _eval_expr(doc, arg[1])
+        if op == "$ne":
+            return _eval_expr(doc, arg[0]) != _eval_expr(doc, arg[1])
+        if op == "$literal":
+            return arg
+        return expr
+    if isinstance(expr, list):
+        return [_eval_expr(doc, e) for e in expr]
+    return expr
+
+
+def _apply_pipeline_update(doc: Dict, pipeline: List[Dict]):
+    """应用 aggregation pipeline update（MongoDB 4.2+ 语义）。
+
+    支持 P0-4 结算用到的形态：
+        [{"$set": {"quantity": {"$add": ["$quantity", qty]}, ...}}]
+    """
+    for stage in pipeline:
+        if "$set" not in stage:
+            # 其他 stage（$unset/$replaceRoot 等）当前不需要
+            continue
+        # 基于更新前的文档快照求值，避免同 stage 内字段互相污染
+        snapshot = {k: (dict(v) if isinstance(v, dict) else v) for k, v in doc.items()}
+        computed = {}
+        for field, expr in stage["$set"].items():
+            computed[field] = _eval_expr(snapshot, expr)
+        for field, value in computed.items():
+            if "." in field:
+                parts = field.split(".")
+                target = doc
+                for p in parts[:-1]:
+                    target = target.setdefault(p, {})
+                target[parts[-1]] = value
+            else:
+                doc[field] = value
 
 
 class FakeDB:

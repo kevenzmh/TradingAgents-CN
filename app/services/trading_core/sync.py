@@ -43,6 +43,23 @@ _XT_ORDER_STATUS = {
 _STALE_SUBMITTED_MINUTES = 30
 
 
+def _item_base(order: Dict[str, Any], broker_id: Any) -> Dict[str, Any]:
+    """对账结果条目中所有分支共享的公共字段。
+
+    保持与旧版 reconcile() 返回结构兼容：调用方（日志/前端/测试）
+    依赖 signal_id 与 submitted_at 定位问题单。
+    """
+    return {
+        "order_id": str(order.get("_id")),
+        "signal_id": order.get("signal_id"),
+        "symbol": order.get("symbol"),
+        "side": order.get("side"),
+        "quantity": order.get("quantity"),
+        "broker_order_id": broker_id,
+        "submitted_at": order.get("created_at") or order.get("updated_at"),
+    }
+
+
 class QMTOrderSyncService:
     """QMT 委托回报同步与对账。"""
 
@@ -101,6 +118,11 @@ class QMTOrderSyncService:
     async def reconcile(self, adapter) -> Dict[str, Any]:
         """对账：引擎 submitted 超时订单 vs 柜台现状。
 
+        P0-2 修复：不再只打警告，而是强制查柜台并补偿：
+        - 柜台已终态 → 推进引擎状态（补齐成交/撤单/废单）
+        - 柜台查不到 → 标记 reconcile_missing + 触发告警（需人工核查）
+        - 柜台仍在途 → 记录部分成交量，留下次同步继续跟踪
+
         与 sync_once 的区别：reconcile 只处理可疑单（提交超过
         _STALE_SUBMITTED_MINUTES 仍非终态），并给出人工介入清单。
         """
@@ -119,21 +141,103 @@ class QMTOrderSyncService:
 
         result: Dict[str, Any] = {
             "stale_count": len(stale),
+            "reconciled": 0,
+            "missing": 0,
+            "still_open": 0,
+            "errors": [],
             "items": [],
         }
+
+        if not stale:
+            return result
+
+        logger.warning(
+            "[对账] 发现 %d 笔超过 %d 分钟无终态的委托，开始强制查柜台补偿",
+            len(stale), _STALE_SUBMITTED_MINUTES,
+        )
+
+        # P0-2 修复：逐笔查柜台并补偿
         for order in stale:
-            result["items"].append({
-                "order_id": str(order.get("_id")),
-                "signal_id": order.get("signal_id"),
-                "symbol": order.get("symbol"),
-                "side": order.get("side"),
-                "quantity": order.get("quantity"),
-                "broker_order_id": order.get("broker_order_id"),
-                "submitted_at": order.get("created_at"),
-            })
-        if stale:
-            logger.warning("[对账] %d 笔实盘委托超过 %d 分钟无终态，需人工核查",
-                          len(stale), _STALE_SUBMITTED_MINUTES)
+            broker_id = order.get("broker_order_id")
+            if not broker_id:
+                result["errors"].append(f"{order.get('_id')}: 无 broker_order_id，无法对账")
+                continue
+
+            try:
+                # 强制查柜台（即使是隔日单也要查，query_orders 隔日会空但不代表不存在）
+                # ⚠️ query_orders 返回 {"status": "ok"|"failed", "orders": [...]}，
+                # 不是按受理号索引的 dict —— 必须从 orders 列表里按 broker_order_id 匹配。
+                query = await adapter.query_orders([broker_id])
+                if not isinstance(query, dict) or query.get("status") != "ok":
+                    err = (query or {}).get("error") if isinstance(query, dict) else "返回格式异常"
+                    result["errors"].append(f"{broker_id}: 柜台查询失败 {err}")
+                    continue
+                remote = next(
+                    (o for o in (query.get("orders") or [])
+                     if str(o.get("broker_order_id")) == str(broker_id)),
+                    None,
+                )
+
+                if remote is None:
+                    # 柜台查不到：标记 reconcile_missing + 触发告警
+                    missing_count = await self._handle_missing_with_alert(order, result["errors"])
+                    result["missing"] += missing_count
+                    result["items"].append({
+                        **_item_base(order, broker_id),
+                        "status": "missing",
+                        "note": "柜台查不到，已标记需人工核查并触发告警",
+                    })
+                    continue
+
+                # 柜台有回报：按状态补偿
+                status = _XT_ORDER_STATUS.get(int(remote.get("status_code", -1)))
+                if status is None:
+                    result["errors"].append(
+                        f"{broker_id}: 未知柜台状态码 {remote.get('status_code')}"
+                    )
+                    continue
+
+                if status in ("filled", "cancelled", "failed"):
+                    # 终态：补偿引擎状态
+                    updated = await self._settle_remote(order, remote, status)
+                    result["reconciled"] += updated
+                    result["items"].append({
+                        **_item_base(order, broker_id),
+                        "status": status,
+                        "reconciled_status": status,
+                        "note": f"从柜台补偿状态: {status}",
+                    })
+                    logger.info(
+                        "[对账] 订单 %s 从柜台补偿状态: %s → %s",
+                        order.get("_id"), order.get("status"), status,
+                    )
+                else:
+                    # 仍在途：记录部分成交量（下次同步继续跟踪）
+                    traded = int(remote.get("traded_volume", 0))
+                    if traded > 0 and order.get("status") != "partially_filled":
+                        await self._update_order(order["_id"], {
+                            "status": "partially_filled",
+                            "traded_volume": traded,
+                        })
+                        result["reconciled"] += 1
+                    result["still_open"] += 1
+                    result["items"].append({
+                        **_item_base(order, broker_id),
+                        "status": "still_open",
+                        "traded_volume": traded,
+                        "note": "柜台仍在途，部分成交量已同步",
+                    })
+
+            except Exception as exc:
+                result["errors"].append(f"{broker_id}: 对账异常 {exc}")
+                logger.error("[对账] 订单 %s 对账异常: %s", order.get("_id"), exc, exc_info=True)
+
+        # 汇总日志
+        logger.warning(
+            "[对账] 完成: %d 笔超时单，补偿 %d 笔，失联 %d 笔，仍在途 %d 笔，错误 %d 条",
+            len(stale), result["reconciled"], result["missing"],
+            result["still_open"], len(result["errors"]),
+        )
         return result
 
     # ---- 内部 ----
@@ -144,8 +248,63 @@ class QMTOrderSyncService:
         )
         return [o async for o in cursor]
 
+    async def _handle_missing_with_alert(self, order: Dict[str, Any], errors: List[str]) -> int:
+        """P0-2 新增：柜台查不到受理号时的补偿与告警。
+
+        与旧 _handle_missing 的差异：
+        - 无论当日/隔日，一律标记 reconcile_missing（明确"需要人工核查"）
+        - 触发告警（写 trading_alerts 集合，供人工/外部系统消费）
+        - 保留原 error 语义供排查
+
+        返回 1 表示已标记（计入 missing 计数）。
+        """
+        broker_id = order.get("broker_order_id")
+        submitted_at = order.get("updated_at") or order.get("created_at", "")
+        is_today = str(submitted_at)[:10] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        reason = (
+            "当日提交但柜台查不到（疑似废单）" if is_today
+            else "隔日仍无成交回报且柜台查不到（可能已成交但回报丢失）"
+        )
+
+        await self._update_order(order["_id"], {
+            "status": "reconcile_missing",
+            "error": f"{reason}，需人工核查",
+            "reconcile_flagged_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # 写告警记录（独立集合，避免污染订单集合语义）
+        try:
+            await self._db["trading_alerts"].insert_one({
+                "alert_type": "order_reconcile_missing",
+                "severity": "critical",
+                "order_id": str(order.get("_id")),
+                "broker_order_id": broker_id,
+                "signal_id": order.get("signal_id"),
+                "symbol": order.get("symbol"),
+                "side": order.get("side"),
+                "quantity": order.get("quantity"),
+                "user_id": order.get("user_id"),
+                "reason": reason,
+                "submitted_at": submitted_at,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "resolved": False,
+            })
+            logger.error(
+                "[对账告警] 订单 %s（受理号 %s）柜台失联，已写告警待人工核查: %s",
+                order.get("_id"), broker_id, reason,
+            )
+        except Exception as alert_exc:
+            # 告警写入失败不能掩盖对账动作本身，但要记下来
+            logger.error("[对账告警] 告警写入失败: %s", alert_exc, exc_info=True)
+            errors.append(f"{broker_id}: 告警写入失败 {alert_exc}")
+
+        return 1
+
     async def _handle_missing(self, order: Dict[str, Any], errors: List[str]) -> int:
-        """柜台查不到受理号：多因隔日（query 只查当日）或数据异常。"""
+        """柜台查不到受理号：多因隔日（query 只查当日）或数据异常。
+
+        保留供 sync_once 调用；reconcile 走 _handle_missing_with_alert。
+        """
         submitted_at = order.get("updated_at") or order.get("created_at", "")
         is_today = str(submitted_at)[:10] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if is_today:
