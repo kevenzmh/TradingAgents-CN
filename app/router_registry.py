@@ -172,6 +172,15 @@ try:
 except Exception as _ts_exc:  # pragma: no cover - 防御：模块缺陷不阻塞应用启动
     logger.warning(f"⚠️ 交易计划路由注册失败（不影响启动）: {_ts_exc}")
 
+# Agent 列表（SkillCenter 绑定下拉数据源，原 Pro /api/agents）
+try:
+    from app.pro.routers import agents as agents_router
+    COMMUNITY_ROUTERS.append(
+        (agents_router.router, "agents", {"tags": ["agents"]})
+    )
+except Exception as _ag_exc:  # pragma: no cover
+    logger.warning(f"⚠️ Agent 列表路由注册失败（不影响启动）: {_ag_exc}")
+
 
 def _register_router_with_log(app_instance, router, router_name: str, kwargs: dict) -> bool:
     """注册路由并记录日志（自 app/main.py 原样搬迁）"""
