@@ -238,6 +238,18 @@ class QMTOrderSyncService:
             len(stale), result["reconciled"], result["missing"],
             result["still_open"], len(result["errors"]),
         )
+        try:
+            from app.services.trading_core.observability import metrics
+            if result["reconciled"]:
+                metrics.inc("trading_reconcile_total", {"result": "reconciled"}, result["reconciled"])
+            if result["missing"]:
+                metrics.inc("trading_reconcile_total", {"result": "missing"}, result["missing"])
+            if result["still_open"]:
+                metrics.inc("trading_reconcile_total", {"result": "still_open"}, result["still_open"])
+            if result["errors"]:
+                metrics.inc("trading_reconcile_total", {"result": "error"}, len(result["errors"]))
+        except Exception:  # pragma: no cover - 埋点失败不影响对账
+            pass
         return result
 
     # ---- 内部 ----

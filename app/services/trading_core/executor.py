@@ -21,12 +21,37 @@
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+
+from app.services.trading_core.observability import metrics, trading_trace
 
 logger = logging.getLogger(__name__)
 
 _ORDERS_COLLECTION = "trading_orders"
+
+
+def _record_order_metric(order: Dict[str, Any], status: str,
+                         elapsed: Optional[float] = None) -> None:
+    """记录订单终态指标（失败静默，绝不影响交易）。
+
+    elapsed 由调用方测量（不写进订单文档，避免污染 schema 与 DB 负载）。
+    """
+    try:
+        labels = {
+            "market": str(order.get("market") or "unknown"),
+            "side": str(order.get("side") or "unknown"),
+            "status": str(status or "unknown"),
+        }
+        metrics.inc("trading_order_total", labels)
+        if elapsed is not None:
+            metrics.observe(
+                "trading_order_latency_seconds", max(0.0, float(elapsed)),
+                {"status": str(status or "unknown")},
+            )
+    except Exception:  # pragma: no cover
+        pass
 
 
 class ExecutionAdapter:
@@ -223,6 +248,10 @@ class DryRunAdapter(ExecutionAdapter):
                       "result": result,
                       "completed_at": datetime.now(timezone.utc).isoformat()}},
         )
+        try:
+            metrics.inc("trading_settlement_total", {"result": "done"})
+        except Exception:  # pragma: no cover
+            pass
         return {"status": "filled", **result}
 
     async def _apply_position_atomic(self, user_id: str, symbol: str, market: str,
@@ -324,6 +353,10 @@ class DryRunAdapter(ExecutionAdapter):
                     )
                     repaired += 1
                     logger.warning("[结算补偿] 订单 %s 三步齐全，补写 done", sid)
+                    try:
+                        metrics.inc("trading_settlement_total", {"result": "repaired"})
+                    except Exception:  # pragma: no cover
+                        pass
                     continue
 
                 # 未完成的：无法安全重放（可能重复扣款），标记待人工
@@ -346,6 +379,13 @@ class DryRunAdapter(ExecutionAdapter):
                     "resolved": False,
                 })
                 failed += 1
+                try:
+                    metrics.inc("trading_settlement_total", {"result": "needs_review"})
+                    metrics.inc("trading_alert_total", {
+                        "alert_type": "settlement_incomplete", "severity": "critical",
+                    })
+                except Exception:  # pragma: no cover
+                    pass
             except Exception as exc:
                 errors.append(f"{sid}: {exc}")
                 logger.error("[结算补偿] %s 失败: %s", sid, exc, exc_info=True)
@@ -600,7 +640,24 @@ class TradingExecutionEngine:
         - submitted（实盘柜台受理）：落 submitted + broker_order_id，
           成交确认由 sync.QMTOrderSyncService 轮询驱动
         - failed：落失败态
+
+        可观测性：本方法是「建单→风控→撮合→落账」的共同出口，
+        在此绑定 trace_id（订单维度稳定），使后台线程/定时任务里
+        产生的日志也能串起同一笔订单的完整生命周期。
         """
+        with trading_trace(order=order):
+            started_at = time.time()
+            result = await self._submit_inner(order, gate, order_doc)
+            # 终态耗时（含未知状态），供 p95 告警使用
+            _record_order_metric(
+                order, str(result.get("status") or "unknown"),
+                elapsed=time.time() - started_at,
+            )
+            return result
+
+    async def _submit_inner(self, order: Dict[str, Any], gate,
+                            order_doc: Optional[Dict] = None) -> Dict[str, Any]:
+        """_submit 的实际逻辑（外层负责 trace 与耗时埋点）。"""
         from app.core.config import get_settings
 
         settings = get_settings()
@@ -653,6 +710,7 @@ class TradingExecutionEngine:
                 order.get("signal_id"), order["side"], order["symbol"],
                 order["quantity"], fill.get("price", 0),
             )
+            # 指标由 _submit 外层统一记录（避免此处重复计数）
             return {"order_id": str(order.get("_id", "")), "status": "filled",
                     "risk": order.get("risk_check"), "fill": fill}
 

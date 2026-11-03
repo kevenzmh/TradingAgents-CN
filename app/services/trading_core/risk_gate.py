@@ -21,6 +21,40 @@ logger = logging.getLogger(__name__)
 _RISK_COLLECTION = "trading_risk_state"
 _KILL_SWITCH_DOC_ID = "kill_switch"
 
+# 拒绝原因 → 稳定闸门代码（用于指标 label，避免高基数文本）
+_REJECTION_GATE_CODES = (
+    ("全局熔断", "kill_switch"),
+    ("LIVE_TRADING_ENABLED", "live_disabled"),
+    ("白名单", "whitelist"),
+    ("置信度", "low_confidence"),
+    ("信号已过期", "signal_stale"),
+    ("单笔金额", "order_notional"),
+    ("单票仓位", "position_pct"),
+    ("今日委托", "daily_orders"),
+    ("今日成交", "daily_notional"),
+    ("成交价非法", "bad_price"),
+    ("实盘执行未开启", "live_disabled"),
+)
+
+
+def _gate_code(reason: str) -> str:
+    """把拒绝理由映射为稳定的闸门代码（未知原因归入 other）。"""
+    text = str(reason or "")
+    for marker, code in _REJECTION_GATE_CODES:
+        if marker in text:
+            return code
+    return "other"
+
+
+def _record_rejection_metrics(rejections: List[str]) -> None:
+    """记录风控拒绝指标（失败静默，绝不影响风控主流程）。"""
+    try:
+        from app.services.trading_core.observability import metrics
+        for reason in rejections or []:
+            metrics.inc("trading_risk_rejected_total", {"gate": _gate_code(reason)})
+    except Exception:  # pragma: no cover
+        pass
+
 
 @dataclass
 class RiskCheckResult:
@@ -193,6 +227,8 @@ class RiskGate:
             logger.warning(
                 "[风控] 信号 %s 被拒绝: %s", signal.signal_id, "; ".join(result.rejections)
             )
+            # 指标：按闸门维度统计拒绝原因（便于定位「为什么今天单子都没下出去」）
+            _record_rejection_metrics(result.rejections)
         return result
 
     async def status(self, user_id: str) -> Dict[str, Any]:

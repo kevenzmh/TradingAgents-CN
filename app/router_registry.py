@@ -190,6 +190,16 @@ try:
 except Exception as _ws_exc:  # pragma: no cover
     logger.warning(f"⚠️ Agent 工作坊路由注册失败（不影响启动）: {_ws_exc}")
 
+# 交易可观测性（第二阶段：Prometheus 指标 + 告警管理）
+try:
+    from app.pro.routers import trading_observability as trading_obs_router
+    COMMUNITY_ROUTERS.append(
+        (trading_obs_router.router, "trading_observability",
+         {"tags": ["trading-observability"]})
+    )
+except Exception as _obs_exc:  # pragma: no cover
+    logger.warning(f"⚠️ 交易可观测性路由注册失败（不影响启动）: {_obs_exc}")
+
 
 def _register_router_with_log(app_instance, router, router_name: str, kwargs: dict) -> bool:
     """注册路由并记录日志（自 app/main.py 原样搬迁）"""

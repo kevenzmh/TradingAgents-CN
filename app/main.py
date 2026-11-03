@@ -1093,6 +1093,33 @@ async def lifespan(app: FastAPI):
         )
         logger.info("🔄 Skill 审核过期清理已配置（每 30 分钟）")
 
+        # 交易告警巡检（第二阶段）：把未处理的 critical 告警定期打到 error.log。
+        # 即使没接 webhook，运维也能在日志里看到「哪笔单需要人工处理」。
+        if settings.LIVE_TRADING_ENABLED or settings.TRADING_MODE != "signal_only":
+            async def _patrol_trading_alerts():
+                try:
+                    from app.core.database import get_mongo_db as _adb
+                    from app.services.trading_core.observability import AlertService
+
+                    result = await AlertService(_adb()).patrol()
+                    if result.get("patrolled"):
+                        logger.error(
+                            "[交易告警巡检] 本轮发现 %d 条未处理的 critical 告警",
+                            result["patrolled"],
+                        )
+                except Exception as _pe:
+                    logger.warning(f"[交易告警巡检] 失败(忽略本轮): {_pe}")
+
+            scheduler.add_job(
+                _patrol_trading_alerts,
+                IntervalTrigger(minutes=5, timezone=settings.TIMEZONE),
+                id="trading_alert_patrol",
+                name="交易告警巡检（每5分钟）",
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info("🚨 交易告警巡检已配置（每 5 分钟）")
+
         scheduler.start()
 
         # 设置调度器实例到服务中，以便API可以管理任务
