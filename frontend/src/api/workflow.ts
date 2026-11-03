@@ -12,7 +12,7 @@ export interface Position {
 
 export interface NodeDefinition {
   id: string
-  type: 'start' | 'end' | 'analyst' | 'researcher' | 'trader' | 'risk' | 'manager' | 'condition' | 'parallel' | 'merge' | 'debate' | 'tool'
+  type: 'start' | 'end' | 'analyst' | 'researcher' | 'trader' | 'risk' | 'manager' | 'condition' | 'parallel' | 'merge' | 'debate' | 'tool' | 'post_processor'
   agent_id?: string
   tool_id?: string
   label: string

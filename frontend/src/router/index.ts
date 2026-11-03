@@ -700,6 +700,25 @@ const routes: RouteRecordRaw[] = [
   },
   // 分析流模块（Pro）→ pro.routes.ts
   ...proWorkflowRoutes,
+  // 分析流管理/编辑器（社区版重建：后端 /api/workflows CRUD 完整可用）
+  {
+    path: '/workflow',
+    name: 'WorkflowManagement',
+    component: () => import('@/views/Workflow/index.vue'),
+    meta: {
+      title: '分析流管理',
+      requiresAuth: true
+    }
+  },
+  {
+    path: '/workflow/editor',
+    name: 'WorkflowEditor',
+    component: () => import('@/views/Workflow/Editor.vue'),
+    meta: {
+      title: '分析流编辑器',
+      requiresAuth: true
+    }
+  },
   // 交易计划（Pro，trading_plan_check 付费功能）→ pro.routes.ts
   ...proTradingSystemRoutes,
 

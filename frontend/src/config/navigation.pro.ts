@@ -25,11 +25,14 @@ export const proTopLevelItems: ProMenuItem[] = []
 /** 顶级菜单中的 Pro 项·交易计划（社区版：空） */
 export const proTradingSystemMenuItems: ProMenuItem[] = []
 
-/** 分析流子菜单（社区版：空） */
+/** 分析流子菜单（社区版重建：管理/编辑器已恢复） */
 export const proWorkflowMenu: ProMenuGroup = {
   path: '/workflow',
   label: '分析流',
-  children: []
+  children: [
+    { path: '/workflow', label: '分析流管理' },
+    { path: '/workflow/editor', label: '流程编辑器' },
+  ]
 }
 
 /** 个人设置中的 Pro 项（社区版：空） */
