@@ -60,11 +60,16 @@ class QMTLiveAdapter:
 
     # ---- 就绪检查（执行引擎下单前必查）----
 
-    def is_ready(self) -> bool:
-        """通道就绪检查：xtquant 可用 + 账号已配置 + 终端可连接。
+    def is_ready(self, *, deep_check: bool = False) -> bool:
+        """通道就绪检查：xtquant 可用 + 账号已配置 + 终端可连接（可选）。
 
-        不做真实连接探测（几百毫秒级开销），连接失败留给委托时显式报错；
-        开机自检（validate_startup）才做全量探测。
+        参数：
+            deep_check: False（默认）做轻量检查（配置 + 终端可用性），
+                       几乎无开销，适合每次委托前调用。
+                       True 做深度探测（真实连接终端 + 查持仓），
+                       有几百毫秒开销，适合启动自检与健康监控定时任务。
+
+        深度探测失败也不会抛异常，调用方根据返回值决定是否继续。
         """
         from app.core.config import get_settings
 
@@ -78,7 +83,30 @@ class QMTLiveAdapter:
         if _get_xttrader() is None:
             logger.warning("[QMT实盘] xtquant 不可用（QMT 终端未安装），通道不可用")
             return False
-        return True
+
+        # 轻量检查到此为止（配置 + 模块可用性）
+        if not deep_check:
+            return True
+
+        # 深度探测：真实连接 + 查持仓（验证终端在运行 + 账号可访问）
+        try:
+            trader = self._connect()
+            from xtquant.xttype import StockAccount
+
+            account = StockAccount(self._account_id, self._account_type)
+            positions = trader.query_stock_positions(account)
+            trader.stop()
+            logger.info(
+                "[QMT实盘·深度探测] 通道正常，账户 %s 持仓 %d 只",
+                self._account_id, len(positions or []),
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[QMT实盘·深度探测] 失败: %s（轻量检查仍通过，委托时会再尝试）",
+                exc,
+            )
+            return False
 
     # ---- 连接 ----
 

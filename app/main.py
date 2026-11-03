@@ -246,6 +246,17 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # 第三阶段：从 MongoDB 加载运行时配置覆盖（风控限额热更新）
+    try:
+        from app.core.database import get_mongo_db as _cfg_db
+        from app.pro.routers.trading_config import apply_overrides_on_startup
+
+        overrides = await apply_overrides_on_startup(_cfg_db())
+        if overrides:
+            logger.info(f"⚙️ 已应用 {len(overrides)} 个运行时配置覆盖")
+    except Exception as _cfg_err:
+        logger.warning(f"⚠️ 配置覆盖加载失败（使用 .env 默认值）: {_cfg_err}")
+
     # 执行数据库迁移
     try:
         from app.core.database import get_mongo_db as _get_db
@@ -1119,6 +1130,36 @@ async def lifespan(app: FastAPI):
                 coalesce=True,
             )
             logger.info("🚨 交易告警巡检已配置（每 5 分钟）")
+
+            # QMT 健康监控（第三阶段）：定时深度探测（真实连接 + 查持仓），
+            # 发现连接中断后写指标 + ERROR 日志，运维能及时发现「终端挂了」。
+            if settings.TRADING_MODE == "live":
+                async def _qmt_health_check():
+                    try:
+                        from app.services.trading_core.qmt_live import QMTLiveAdapter
+                        from app.services.trading_core.observability import metrics
+
+                        adapter = QMTLiveAdapter()
+                        ok = adapter.is_ready(deep_check=True)
+                        metrics.inc("trading_qmt_health_total", {
+                            "result": "ok" if ok else "failed",
+                        })
+                        if not ok:
+                            logger.error(
+                                "[QMT健康监控] 深度探测失败：终端可能未运行或账号不可访问"
+                            )
+                    except Exception as _he:
+                        logger.warning(f"[QMT健康监控] 失败(忽略本轮): {_he}")
+
+                scheduler.add_job(
+                    _qmt_health_check,
+                    IntervalTrigger(minutes=10, timezone=settings.TIMEZONE),
+                    id="qmt_health_check",
+                    name="QMT 健康监控（每10分钟深度探测）",
+                    max_instances=1,
+                    coalesce=True,
+                )
+                logger.info("🩺 QMT 健康监控已配置（每 10 分钟深度探测）")
 
         scheduler.start()
 

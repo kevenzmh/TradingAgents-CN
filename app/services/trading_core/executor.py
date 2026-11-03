@@ -665,7 +665,8 @@ class TradingExecutionEngine:
 
         if settings.TRADING_MODE == "live":
             # 实盘通道就绪检查前移：未就绪直接 failed，不给柜台添废单
-            if not getattr(adapter, "_adapter", None) or not adapter._adapter.is_ready():
+            # 轻量检查（只看配置），几乎无开销
+            if not getattr(adapter, "_adapter", None) or not adapter._adapter.is_ready(deep_check=False):
                 error = "QMT 实盘通道未就绪（终端未运行/账号未配置）"
                 await self._set_status(order, "failed", error)
                 return {"order_id": str(order.get("_id", "")), "status": "failed",

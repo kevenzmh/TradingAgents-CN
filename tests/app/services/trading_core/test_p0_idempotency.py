@@ -139,16 +139,20 @@ def _setpath(doc, key, value):
 class FakeAdapter:
     """实盘适配器替身：is_ready 恒 True，execute 由用例注入。"""
 
-    def __init__(self, result):
+    def __init__(self, result, *, ready: bool = True):
         self._result = result
         self.calls = 0
+        self._ready = ready
 
         class _Inner:
-            @staticmethod
-            def is_ready():
-                return True
+            def __init__(self, ready: bool):
+                self._ready = ready
 
-        self._adapter = _Inner()
+            # 第三阶段：is_ready 新增 deep_check 关键字参数（轻量/深探测）
+            def is_ready(self, *, deep_check: bool = False):
+                return self._ready
+
+        self._adapter = _Inner(ready)
 
     async def execute(self, order):
         self.calls += 1

@@ -200,6 +200,15 @@ try:
 except Exception as _obs_exc:  # pragma: no cover
     logger.warning(f"⚠️ 交易可观测性路由注册失败（不影响启动）: {_obs_exc}")
 
+# 交易配置热更新（第三阶段：风控限额实时调整）
+try:
+    from app.pro.routers import trading_config as trading_cfg_router
+    COMMUNITY_ROUTERS.append(
+        (trading_cfg_router.router, "trading_config", {"tags": ["trading-config"]})
+    )
+except Exception as _cfg_exc:  # pragma: no cover
+    logger.warning(f"⚠️ 交易配置路由注册失败（不影响启动）: {_cfg_exc}")
+
 
 def _register_router_with_log(app_instance, router, router_name: str, kwargs: dict) -> bool:
     """注册路由并记录日志（自 app/main.py 原样搬迁）"""
