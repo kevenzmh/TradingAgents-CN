@@ -181,6 +181,15 @@ try:
 except Exception as _ag_exc:  # pragma: no cover
     logger.warning(f"⚠️ Agent 列表路由注册失败（不影响启动）: {_ag_exc}")
 
+# Agent 工作坊（创建/构建/测试/发布/管理自定义 Agent，原 Pro 工坊页面的数据面）
+try:
+    from app.pro.routers import agent_workshop as agent_workshop_router
+    COMMUNITY_ROUTERS.append(
+        (agent_workshop_router.router, "agent_workshop", {"tags": ["agent-workshop"]})
+    )
+except Exception as _ws_exc:  # pragma: no cover
+    logger.warning(f"⚠️ Agent 工作坊路由注册失败（不影响启动）: {_ws_exc}")
+
 
 def _register_router_with_log(app_instance, router, router_name: str, kwargs: dict) -> bool:
     """注册路由并记录日志（自 app/main.py 原样搬迁）"""

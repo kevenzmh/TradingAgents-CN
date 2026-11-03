@@ -435,7 +435,10 @@ class AgentWorkshopService:
             "created_at": _now_iso(),
             "updated_at": _now_iso(),
         }
-        await self.db[VERSION_COLLECTION].insert_one(version_doc)
+        # 传副本给 insert_one：motor 会就地注入 _id（ObjectId），
+        # 若直接用 version_doc，下面的 dict(version_doc) 会带上 ObjectId，
+        # 导致路由层 JSON 序列化失败（TypeError: 'ObjectId' object is not iterable）
+        await self.db[VERSION_COLLECTION].insert_one(dict(version_doc))
 
         # agent_configs：AgentFactory 据此实例化（draft 态先落结构，enabled 等发布时开）
         spec_doc = await self.db[SPEC_COLLECTION].find_one({"spec_id": session.spec_id}) or {}
