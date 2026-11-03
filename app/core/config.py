@@ -461,6 +461,21 @@ class Settings(BaseSettings):
     EMAIL_DAILY_LIMIT: int = Field(default=100, description="每用户每天最多发送邮件数")
     EMAIL_RATE_LIMIT: int = Field(default=10, description="每分钟最多发送邮件数")
 
+    # ===== 交易告警邮件推送 =====
+    # 交易告警的最后一环：critical 告警通过邮件主动通知运维，不再只依赖有人翻日志。
+    TRADING_ALERT_EMAIL_ENABLED: bool = Field(
+        default=False,
+        description="启用交易告警邮件推送（需同时配置 SMTP_ENABLED）",
+    )
+    TRADING_ALERT_EMAIL_TO: str = Field(
+        default="",
+        description="告警收件人邮箱，多个用逗号分隔",
+    )
+    TRADING_ALERT_EMAIL_MIN_SEVERITY: str = Field(
+        default="critical",
+        description="推送的最低严重级别：critical / warning",
+    )
+
     @property
     def is_production(self) -> bool:
         """是否为生产环境"""

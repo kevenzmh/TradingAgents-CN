@@ -383,11 +383,18 @@ class AlertService:
         return out
 
     async def patrol(self, *, repeat_after_minutes: int = 30) -> Dict[str, Any]:
-        """巡检未处理的 critical 告警并打到日志（可由定时任务驱动）。
+        """巡检未处理的 critical 告警：打日志 +（可选）邮件推送。
 
-        `repeat_after_minutes` 内部止血：同一告警在窗口内不重复打印，
-        避免每轮巡检刷屏。日志是最后一道防线——即便没接 webhook，
-        运维也能在 error.log 里看到。
+        `repeat_after_minutes` 做止血：同一告警在窗口内不重复打印/发送，
+        避免一次故障刷爆日志与邮箱。
+
+        执行顺序刻意如此：
+        1. 先逐条写日志——即使邮件通道挂了，日志这道防线仍然有效
+        2. 再把本轮告警合并成一封邮件发送（批量，避免 N 封邮件）
+        3. 最后统一打 last_patrolled_at 时间戳
+
+        邮件未配置（TRADING_ALERT_EMAIL_ENABLED=false 或无收件人）时静默跳过，
+        不产生错误噪音。
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=repeat_after_minutes)).isoformat()
         try:
@@ -402,6 +409,10 @@ class AlertService:
             logger.warning("[告警] 巡检查询失败: %s", exc)
             return {"patrolled": 0, "errors": [str(exc)]}
 
+        if not docs:
+            return {"patrolled": 0, "errors": [], "email": {"sent": False, "reason": "no_alerts"}}
+
+        # 1. 逐条写日志（第一道防线，先于邮件）
         for doc in docs:
             logger.error(
                 "[交易告警·需处理] type=%s order=%s broker=%s symbol=%s %s x%s reason=%s created=%s",
@@ -409,21 +420,34 @@ class AlertService:
                 doc.get("symbol"), doc.get("side"), doc.get("quantity"),
                 doc.get("reason"), doc.get("created_at"),
             )
-            try:
-                await self._db[ALERTS_COLLECTION].update_one(
-                    {"_id": doc.get("_id")},
-                    {"$set": {"last_patrolled_at": datetime.now(timezone.utc).isoformat()}},
-                )
-            except Exception:
-                pass
             metrics.inc("trading_alert_total", {
                 "alert_type": str(doc.get("alert_type") or "unknown"),
                 "severity": "critical",
             })
 
-        if docs:
-            logger.error("[告警] 本轮巡检发现 %d 条未处理的 critical 告警", len(docs))
-        return {"patrolled": len(docs), "errors": []}
+        # 2. 合并发送邮件（失败只记日志，绝不阻断巡检）
+        email_result: Dict[str, Any] = {"sent": False, "reason": "skipped"}
+        try:
+            from app.services.trading_core.alert_notifier import TradingAlertNotifier
+
+            email_result = await TradingAlertNotifier(self._db).send(docs)
+        except Exception as exc:  # pragma: no cover - notifier 内部已兜底
+            logger.error("[告警] 邮件推送异常（巡检继续）: %s", exc, exc_info=True)
+            email_result = {"sent": False, "reason": f"exception: {exc}"}
+
+        # 3. 打时间戳（幂等止血）
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for doc in docs:
+            try:
+                await self._db[ALERTS_COLLECTION].update_one(
+                    {"_id": doc.get("_id")},
+                    {"$set": {"last_patrolled_at": now_iso}},
+                )
+            except Exception:
+                pass
+
+        logger.error("[告警] 本轮巡检发现 %d 条未处理的 critical 告警", len(docs))
+        return {"patrolled": len(docs), "errors": [], "email": email_result}
 
 
 def record_alert_metric(alert_type: str, severity: str = "critical") -> None:
