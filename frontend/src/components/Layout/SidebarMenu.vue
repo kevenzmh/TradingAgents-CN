@@ -66,7 +66,7 @@
       <template #title>研究报告</template>
     </el-menu-item>
 
-    <!-- Pro：分析流子菜单（社区版发布时自动隐藏，见 navigation.pro.ts） -->
+    <!-- 分析流（v3.0 核心功能，社区版全量开放：配置入口见设置页；执行入口在各分析页的"分析流程"下拉） -->
     <el-sub-menu :index="proWorkflowMenu.path">
       <template #title>
         <el-icon><SetUp /></el-icon>
@@ -77,6 +77,9 @@
         {{ child.label }}
         <el-tag v-if="child.advanced" type="success" size="small" style="margin-left: 4px; transform: scale(0.85);">高级</el-tag>
         <el-tag v-else-if="child.badge" :type="child.badge.type" size="small" style="margin-left: 4px; transform: scale(0.85);">{{ child.badge.text }}</el-tag>
+      </el-menu-item>
+      <el-menu-item v-if="!proWorkflowMenu.children.length" index="/settings?tab=analysis">
+        流程偏好设置
       </el-menu-item>
     </el-sub-menu>
 
