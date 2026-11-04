@@ -80,7 +80,7 @@ const licenseLabel = computed(() => {
   if (isJdyunMode) return '京东云版'
   const plan = licenseStore.plan
   if (plan === 'enterprise') return '终身高级学员'
-  if (plan === 'pro') return '高级学员'
+  if (plan === 'pro') return 'Pro 版'
   if (plan === 'trial') return '体验高级学员'
   return '初级学员'
 })

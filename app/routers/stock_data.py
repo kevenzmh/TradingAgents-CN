@@ -726,6 +726,8 @@ async def save_quotes_batch(
                 # 添加元数据（固定使用 local 作为本地数据标识）
                 quote_data["data_source"] = "local"
                 quote_data["updated_at"] = datetime.utcnow()
+                # 读取方（mongodb_cache_adapter.get_market_quotes）按 code 查询，缺省与 symbol 保持一致
+                quote_data.setdefault("code", symbol)
 
                 valid_quotes.append((idx, quote_data))
 
@@ -840,7 +842,7 @@ async def get_api_guide_content():
 
     try:
         # 读取 Markdown 文件
-        guide_path = Path("docs/03-development/api/stock-data-import.md")
+        guide_path = Path(__file__).resolve().parents[2] / "docs" / "03-development" / "api" / "stock-data-import.md"
 
         if not guide_path.exists():
             raise HTTPException(

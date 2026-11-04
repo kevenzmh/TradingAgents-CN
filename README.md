@@ -1,14 +1,14 @@
-# TradingAgents-CN 社区版（Community Edition）
+# TradingAgents-CN Pro 版（Professional Edition）
 
-**English**: TradingAgents-CN Community Edition is a hybrid-licensed (Apache-2.0 core engine + proprietary source-available application layer) multi-agent stock research assistant for the Chinese A-share market. It orchestrates LLM-based analyst agents for debate-style research, natural-language stock screening, paper trading and study courses. For learning and research only — **not investment advice**.
+**English**: TradingAgents-CN Professional Edition is a multi-agent stock research platform for the Chinese A-share market. It orchestrates LLM-based analyst agents for debate-style research, natural-language stock screening, professional trading workflows, and advanced agent customization. For learning and professional research — **not investment advice**.
 
 [![License](https://img.shields.io/badge/License-Hybrid_(Apache--2.0_+_Proprietary)-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Vue](https://img.shields.io/badge/Vue-3-brightgreen.svg)](https://vuejs.org/)
 
-基于多智能体协作的 A 股研究辅助系统。由多个扮演不同角色（大盘/板块/市场/基本面/新闻分析师，乐观/审慎研究员等）的 AI 智能体协作完成研究流程，帮助你系统化学习多智能体框架与 AI 大模型在股票研究中的应用。
+基于多智能体协作的 A 股专业研究平台。由多个扮演不同角色（大盘/板块/市场/基本面/新闻分析师，乐观/审慎研究员等）的 AI 智能体协作完成研究流程，提供 Agent 工作坊、交易系统管理、定时分析等专业功能。
 
-> 本项目是研究辅助工具，所有 AI 生成内容仅供学习参考，**不构成投资建议**。
+> 本项目是专业研究工具，所有 AI 生成内容仅供学习参考，**不构成投资建议**。
 
 ## 核心功能
 
@@ -19,8 +19,12 @@
 - **智能助手**：联网搜索 + 工具调用 + 事实记忆
 - **AI 记忆**：项目级记忆与事实沉淀
 - **Skill 中心**：创建和管理自定义数据获取技能
-- **学习中心**：免费系统课程（发现阶段 5 课）+ 8 篇学习指南
+- **学习中心**：系统课程（发现阶段 5 课 + 进阶 8 阶段）
 - **模拟交易**：纸面交易与复盘
+- **Agent 工作坊**：创建、测试、发布自定义 Agent ⭐ Pro 独占
+- **交易系统**：策略创建、优化、模板调试 ⭐ Pro 独占
+- **定时分析 / 批量分析**：自动化研究工作流 ⭐ Pro 独占
+- **专业报告导出**：Word / PDF 多格式导出 ⭐ Pro 独占
 
 ## 版本演进
 
@@ -31,20 +35,18 @@
 | v2.1 | 研究辅助合规化 | 报告表达、提示词模板、界面文案全面对齐"研究辅助"定位；新模型接入与稳定性提升 |
 | v3.0 | 从分析工具到 AI 助手 | 统一 AI 助手入口、自然语言选股、Agent 自主规划分析、Skill 能力扩展；架构升级为 FastAPI + Vue 3 + MongoDB/Redis |
 
-## 社区版与 Pro 版的差异
+## Pro 版功能清单
 
-| 能力 | 社区版 | Pro 版 |
-|------|:------:|:------:|
-| 单股研究 / 通用研究 / 股票筛选 | ✅ | ✅ |
-| 学习中心（免费课程） / 模拟交易 / Skill 中心 | ✅ | ✅ |
-| Agent 工作坊（创建、发布、管理自定义 Agent） | — | ✅ |
-| 交易系统（策略创建 / 优化 / 模板调试） | — | ✅ |
-| 定时分析 / 批量分析 | — | ✅ |
-| 专业报告导出（Word / PDF 多格式） | — | ✅ |
-| 高级课程（进阶 8 阶段） | — | ✅ |
-| 许可 | 混合授权（核心引擎开源 + 应用层专有） | 商业许可 |
-
-Pro 版面向有更高阶研究工作流需求的用户，获取方式见项目主页或联系作者。
+| 能力 | 状态 |
+|------|:----:|
+| 单股研究 / 通用研究 / 股票筛选 | ✅ |
+| 学习中心（免费课程 + 进阶 8 阶段） / 模拟交易 / Skill 中心 | ✅ |
+| Agent 工作坊（创建、发布、管理自定义 Agent） | ✅ |
+| 交易系统（策略创建 / 模板调试） | ✅ |
+| 定时分析 / 批量分析 | ✅ |
+| 专业报告导出（Word / PDF 多格式） | ✅ |
+| 交易监控（告警 / 指标 / 风控限额热更新） | ✅ |
+| 许可 | 分层授权，详见 [LICENSE](./LICENSE) |
 
 ## 快速开始
 

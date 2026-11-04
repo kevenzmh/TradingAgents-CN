@@ -1,14 +1,14 @@
 /**
- * 授权信息 Store（社区版）
+ * 授权信息 Store（Pro 版）
  *
- * 本文件由发布管道（scripts/publish_community.py）生成：
- * 社区版无授权体系，本 stub 保持与 Pro 版 stores/license.ts 完全一致的公开接口，
+ * Pro 版内置授权：不访问授权服务器。保持与原 stores/license.ts 一致的公开接口，
  * 消费方（Dashboard/UserProfile/featureAccess/Learning/DataImport/TradeReview）零改动。
  *
  * 行为语义：
- * - 不发起任何网络请求（无 /api/license/status 探活，社区版无该路由）
- * - isPro 恒为 false，plan 恒为 'free'
- * - hasFeature 仅放行免费功能（与后端 community_stub FREE_ACCESS_FEATURES 对齐）
+ * - 不发起任何网络请求（无 /api/license/status 探活）
+ * - isPro 恒为 true，plan 恒为 'pro'
+ * - hasFeature 放行全部 Pro 功能（与后端 core/licensing/community_stub.py 对齐）
+ * - hasLegacyCourseAccess 恒为 true：进阶课程全部课时可读
  */
 
 import { defineStore } from 'pinia'
@@ -49,10 +49,8 @@ export const PRO_FEATURES = [
 
 export type ProFeature = typeof PRO_FEATURES[number]
 
-// 社区版免费放行的功能 — 2026-11-02 语义切换：社区版即完整开源功能集，
-// Pro 分离计划中"付费解锁"的功能在社区版全部开放（后端 require_feature/
-// require_pro 均为放行透传，前端侧同步放行以消除残缺体验）
-// 与 core/licensing/community_stub.py FREE_ACCESS_FEATURES 对齐
+// Pro 版放行的功能集（后端 require_feature/require_pro 均为放行透传，前端同步放行）
+// 与 core/licensing/community_stub.py FREE_ACCESS_FEATURES / PRO_FEATURES 对齐
 const FREE_ACCESS_FEATURES = new Set<ProFeature>([
   'portfolio_analysis',
   'trade_review',
@@ -69,10 +67,10 @@ const FREE_ACCESS_FEATURES = new Set<ProFeature>([
   'prompt_templates'
 ])
 
-// 社区版固定授权信息（Free 档 = 完整功能）
+// Pro 版固定授权信息（内置，无到期）
 const COMMUNITY_LICENSE_INFO: LicenseInfo = {
   email: '',
-  plan: 'free',
+  plan: 'pro',
   features: [
     'portfolio_analysis',
     'trade_review',
@@ -94,27 +92,26 @@ const COMMUNITY_LICENSE_INFO: LicenseInfo = {
 }
 
 export const useLicenseStore = defineStore('license', () => {
-  // 状态（保留接口兼容；licenseInfo 固定为 Free 档，不来自网络）
+  // 状态（保留接口兼容；licenseInfo 固定为 Pro 档，不来自网络）
   const appToken = ref<string | null>(localStorage.getItem('app-token'))
   const licenseInfo = ref<LicenseInfo | null>({ ...COMMUNITY_LICENSE_INFO })
   const loading = ref(false)
   const error = ref<string | null>(null)
   const lastVerifiedAt = ref<Date | null>(null)
 
-  // 计算属性：社区版恒定值
-  const isPro = computed(() => false)
+  // 计算属性：Pro 版恒定值
+  const isPro = computed(() => true)
   const isEnterprise = computed(() => false)
   const isTrial = computed(() => false)
-  // 类型保持与 Pro 版一致（完整联合类型），运行时值恒为 'free'，
-  // 消费方的 plan === 'pro' 等分支类型合法（运行时永不命中，走 free 兜底）
-  const plan = computed((): LicenseInfo['plan'] => 'free')
+  // 类型保持完整联合类型，运行时值恒为 'pro'
+  const plan = computed((): LicenseInfo['plan'] => 'pro')
 
   const expireAt = computed(() => null)
   const daysRemaining = computed(() => null)
   const isExpiringSoon = computed(() => false)
   const isExpired = computed(() => false)
   const isOffline = computed(() => false)
-  const hasLegacyCourseAccess = computed(() => false)
+  const hasLegacyCourseAccess = computed(() => true)
 
   const hasFeature = (_feature: ProFeature) => {
     return FREE_ACCESS_FEATURES.has(_feature)
@@ -133,7 +130,7 @@ export const useLicenseStore = defineStore('license', () => {
   }
 
   const verifyLicense = async (_force = false, _authServer?: string): Promise<boolean> => {
-    // 社区版无授权体系：直接返回 Free 档有效状态，不发起请求
+    // Pro 版内置授权：直接返回有效状态，不发起请求
     lastVerifiedAt.value = new Date()
     return true
   }

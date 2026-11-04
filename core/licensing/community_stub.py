@@ -1,5 +1,13 @@
 """
-社区版权限门控 stub（v3.6.0 社区版开源分离 · M1 §7.3）
+权限门控内置实现（当前构建：Pro 版）
+
+【Pro 版语义】本构建为 Pro 版：内置 Pro 授权，不访问授权服务器、不验证 token。
+- 授权档位恒为 PRO，配额取 TIER_FEATURES[PRO]
+- is_pro 恒 True，全部 Pro 功能放行
+模块名与类名（Community*）为兼容薄壳层的既有 import 而保留，语义以本段为准。
+
+以下为原社区版分离设计说明（历史背景）：
+权限门控 stub（v3.6.0 社区版开源分离 · M1 §7.3）
 
 社区版发布时的门控替换实现：无授权服务器、无 token 验证、无网络请求。
 发布脚本（scripts/publish_community.py，方案 §8.1 步骤 c）按以下方式指向本模块：
@@ -31,7 +39,7 @@ from fastapi import Depends, Header
 from pydantic import BaseModel, Field
 
 from app.routers.auth_db import get_current_user
-from .models import LicenseFeatures, LicenseTier
+from .models import TIER_FEATURES, LicenseFeatures, LicenseTier
 
 logger = logging.getLogger("core.licensing.community_stub")
 
@@ -40,20 +48,10 @@ logger = logging.getLogger("core.licensing.community_stub")
 # 社区版配额（Free 档）
 # =============================================================================
 
-COMMUNITY_TIER_FEATURES = LicenseFeatures(
-    max_analysts=4,               # 最大分析师数量
-    max_researchers=2,            # 最大研究员数量
-    allow_custom_agents=False,    # 不允许自定义智能体
-    max_workflows=3,              # 最大保存工作流数
-    max_nodes_per_workflow=10,    # 每个工作流最大节点数
-    allow_workflow_export=False,  # 不允许导出工作流
-    allow_sector_analyst=False,   # 行业分析师
-    allow_index_analyst=False,    # 大盘分析师
-    allow_parallel_execution=False,   # 并行执行
-    allow_memory_persistence=False,   # 记忆持久化
-    daily_api_calls=100,          # 每日 API 调用限制
-    max_concurrent_executions=1,  # 最大并发执行数（单并发）
-)
+# Pro 档配额（分析师 6、工作流 50、允许自定义 Agent/并行/记忆持久化、5 并发、API 2000/日）。
+# COMMUNITY_TIER_FEATURES 名称保留以兼容既有引用。
+PRO_TIER_FEATURES = TIER_FEATURES[LicenseTier.PRO]
+COMMUNITY_TIER_FEATURES = PRO_TIER_FEATURES
 
 # 社区版免费放行的功能 — 2026-11-02 语义切换：社区版即完整开源功能集，
 # Pro 分离计划中"付费解锁"的功能在社区版全部开放（require_feature/require_pro
@@ -74,8 +72,8 @@ FREE_ACCESS_FEATURES = {
     "prompt_templates",
 }
 
-# 社区版无 Pro 专属功能（Pro 功能靠发布管道物理剔除，不靠运行时门控）
-PRO_FEATURES: list[str] = []
+# Pro 功能集：Pro 版全部放行
+PRO_FEATURES: list[str] = sorted(FREE_ACCESS_FEATURES)
 
 
 # =============================================================================
@@ -85,7 +83,7 @@ PRO_FEATURES: list[str] = []
 class LicenseInfo(BaseModel):
     """授权信息（社区版：恒为 free 档有效授权）"""
     email: str
-    plan: str  # 社区版恒为 "free"
+    plan: str  # Pro 版恒为 "pro"
     features: list[str] = Field(default_factory=list)
     device_registered: bool = False
     is_valid: bool = True
@@ -102,10 +100,10 @@ class LicenseInfo(BaseModel):
 
 
 def _community_license_info(email: str = "") -> LicenseInfo:
-    """构造社区版授权信息（free 档、有效、无网络验证、全功能开放）"""
+    """构造内置授权信息（Pro 档、有效、无网络验证、全功能开放）"""
     return LicenseInfo(
         email=email,
-        plan="free",
+        plan="pro",
         is_valid=True,
         error_message=None,
         features=sorted(FREE_ACCESS_FEATURES),
@@ -132,16 +130,16 @@ class CommunityLicenseService:
         return ""
 
     async def verify_app_token(self, token: str, auth_server: Optional[str] = None) -> LicenseInfo:
-        """社区版不验证 token（license 路由已剔除，此方法仅为兼容残留调用，防御性返回 free 档）"""
-        logger.debug("社区版跳过 App Token 验证")
+        """Pro 版内置授权，不验证 token（仅为兼容残留调用，返回 pro 档）"""
+        logger.debug("Pro 版跳过 App Token 验证")
         return _community_license_info()
 
     def is_pro(self, license_info: LicenseInfo) -> bool:
-        """社区版无付费体系，恒为非 PRO"""
-        return False
+        """Pro 版：授权有效即为 PRO"""
+        return bool(license_info.is_valid)
 
     def has_feature(self, license_info: LicenseInfo, feature: str) -> bool:
-        """免费语义：FREE_ACCESS_FEATURES 放行，其余拦截（社区版 plan 恒为 free）"""
+        """Pro 功能集放行；授权无效时一律拦截"""
         if not license_info.is_valid:
             return False
         if feature in FREE_ACCESS_FEATURES:
@@ -226,10 +224,10 @@ def require_feature(feature: str) -> Callable:
 
 class CommunityLicenseManager:
     """
-    社区版许可证管理器（单例）：恒为 Free 档 + 内置社区版配额
+    内置许可证管理器（单例）：恒为 PRO 档 + Pro 配额
 
     供 core/api/agent_api.py 等引擎侧代码使用：
-    tier 恒为 FREE → 仅 free 档智能体可见（与社区版功能边界一致）。
+    tier 恒为 PRO → free/basic/pro 档智能体均可见。
     """
 
     _instance = None
@@ -241,8 +239,8 @@ class CommunityLicenseManager:
 
     @property
     def tier(self) -> LicenseTier:
-        """当前级别：恒为 FREE"""
-        return LicenseTier.FREE
+        """当前级别：恒为 PRO"""
+        return LicenseTier.PRO
 
     @property
     def is_valid(self) -> bool:
@@ -251,18 +249,18 @@ class CommunityLicenseManager:
 
     @property
     def features(self) -> LicenseFeatures:
-        """社区版配额（Free 档）"""
+        """Pro 档配额"""
         return COMMUNITY_TIER_FEATURES
 
     def can_use_feature(self, feature_name: str) -> bool:
-        """检查是否可以使用某功能（按 Free 档配额）"""
+        """检查是否可以使用某功能（按 Pro 档配额）"""
         features = self.features
         if hasattr(features, f"allow_{feature_name}"):
             return getattr(features, f"allow_{feature_name}")
         return True
 
     def check_limit(self, limit_name: str, current_value: int) -> bool:
-        """检查是否超过限制（按 Free 档配额）"""
+        """检查是否超过限制（按 Pro 档配额）"""
         features = self.features
         if hasattr(features, limit_name):
             max_value = getattr(features, limit_name)
@@ -270,7 +268,7 @@ class CommunityLicenseManager:
         return True
 
     def get_remaining(self, limit_name: str, current_value: int) -> int:
-        """获取剩余配额（按 Free 档配额）"""
+        """获取剩余配额（按 Pro 档配额）"""
         features = self.features
         if hasattr(features, limit_name):
             max_value = getattr(features, limit_name)
@@ -279,7 +277,7 @@ class CommunityLicenseManager:
 
     def activate(self, license_key: str, prefer_online: bool = True) -> tuple[bool, Optional[str]]:
         """社区版不支持许可证激活"""
-        return False, "社区版不支持许可证激活"
+        return False, "Pro 版内置授权，不支持许可证激活（无需激活）"
 
     def deactivate(self) -> None:
         """社区版无许可证概念"""

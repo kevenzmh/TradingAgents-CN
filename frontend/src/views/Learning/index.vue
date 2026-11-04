@@ -92,10 +92,10 @@
       <div class="section-header">
         <div class="header-content">
           <h2>🎓 从散户到系统交易者：AI赋能的可进化投资法</h2>
-          <el-tag type="success" size="large">{{ freeLessonCount }}节免费</el-tag>
+          <el-tag type="success" size="large">{{ hasFullAccess ? '全部已解锁' : `${freeLessonCount}节免费` }}</el-tag>
           <PaidCourseBadge variant="tag-short" size="large" />
         </div>
-        <p class="section-subtitle">30节系统课程，按炒股全生命周期组织：发现 → 跟踪 → 持仓 → 复盘 → 扩展。前{{ freeLessonCount }}节免费预览。<PaidCourseBadge variant="text" /></p>
+        <p class="section-subtitle">30节系统课程，按炒股全生命周期组织：发现 → 跟踪 → 持仓 → 复盘 → 扩展。{{ hasFullAccess ? '全部课时已解锁。' : `前${freeLessonCount}节免费预览。` }}<PaidCourseBadge variant="text" /></p>
       </div>
 
       <!-- 课程分类（所有人可见） -->
@@ -143,12 +143,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { advancedCourseCategories, FREE_LESSON_COUNT } from '@/config/advancedCourses'
 import PaidCourseBadge from '@/components/PaidCourseBadge.vue'
+import { useLicenseStore } from '@/stores/license'
 
 const router = useRouter()
+const licenseStore = useLicenseStore()
+const hasFullAccess = computed(() => licenseStore.hasLegacyCourseAccess)
 
 const freeLessonCount = FREE_LESSON_COUNT
 

@@ -190,6 +190,15 @@ try:
 except Exception as _ws_exc:  # pragma: no cover
     logger.warning(f"⚠️ Agent 工作坊路由注册失败（不影响启动）: {_ws_exc}")
 
+# 数据导入（历史K线 / 社媒消息批量导入 + 指南）
+try:
+    from app.pro.routers import data_import as data_import_router
+    COMMUNITY_ROUTERS.append(
+        (data_import_router.router, "data_import", {"tags": ["data-import"]})
+    )
+except Exception as _di_exc:  # pragma: no cover
+    logger.warning(f"⚠️ 数据导入路由注册失败（不影响启动）: {_di_exc}")
+
 # 交易可观测性（第二阶段：Prometheus 指标 + 告警管理）
 try:
     from app.pro.routers import trading_observability as trading_obs_router

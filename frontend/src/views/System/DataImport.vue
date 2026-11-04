@@ -6,7 +6,7 @@
         数据导入管理
       </h1>
       <p class="page-description">
-        通过 API 接口批量导入股票数据、社媒消息等数据到系统中
+        通过在线导入或 API 接口批量导入股票数据、社媒消息等数据到系统中
       </p>
     </div>
 
@@ -20,13 +20,12 @@
                 <el-icon><TrendCharts /></el-icon>
                 股票数据批量导入
               </span>
-              <!-- 社区版无学员等级限制 -->
             </div>
           </template>
 
           <div class="card-content">
             <p class="description">
-              通过 API 接口批量导入股票基本信息、实时行情、财务数据、新闻数据和历史K线数据
+              通过在线导入或 API 接口批量导入股票基本信息、实时行情、财务数据、新闻数据和历史K线数据
             </p>
 
             <div class="features">
@@ -53,7 +52,11 @@
             </div>
 
             <div class="actions">
-              <el-button type="primary" @click="goToStockDataApiGuide">
+              <el-button type="primary" @click="openImport(STOCK_KINDS)">
+                <el-icon><Upload /></el-icon>
+                在线导入
+              </el-button>
+              <el-button @click="goToStockDataApiGuide">
                 <el-icon><Document /></el-icon>
                 查看 API 文档
               </el-button>
@@ -71,13 +74,12 @@
                 <el-icon><ChatDotRound /></el-icon>
                 社媒消息批量导入
               </span>
-              <!-- 社区版无学员等级限制 -->
             </div>
           </template>
 
           <div class="card-content">
             <p class="description">
-              通过 API 接口批量导入社交媒体消息数据，支持多平台数据源
+              通过在线导入或 API 接口批量导入社交媒体消息数据，支持多平台数据源
             </p>
 
             <div class="features">
@@ -100,7 +102,11 @@
             </div>
 
             <div class="actions">
-              <el-button type="primary" @click="goToSocialMediaApiGuide">
+              <el-button type="primary" @click="openImport(SOCIAL_KINDS)">
+                <el-icon><Upload /></el-icon>
+                在线导入
+              </el-button>
+              <el-button @click="goToSocialMediaApiGuide">
                 <el-icon><Document /></el-icon>
                 查看 API 文档
               </el-button>
@@ -110,36 +116,40 @@
       </el-col>
     </el-row>
 
-    <!-- 高级学员权限提示 -->
-    <el-alert
-      v-if="!isPro"
-      type="info"
-      :closable="false"
-      show-icon
-      style="margin-top: 20px;"
-    >
-      <template #title>
-        <strong>当前社区版本即为完整功能</strong>
-      </template>
-      <p>
-        本项目为开源社区版，所有分析功能（单股/批量分析、组合研究、操作复盘等）均已开放，无学员等级限制。
-        <router-link to="/learning">前往学习中心</router-link> 了解完整用法。
-      </p>
-    </el-alert>
+    <!-- 社媒消息管理 -->
+    <SocialMediaManager ref="socialManager" />
+
+    <ImportDialog v-model="importVisible" :kinds="importKinds" @imported="onImported" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Upload, TrendCharts, ChatDotRound, Document, Check } from '@element-plus/icons-vue'
-import { useLicenseStore } from '@/stores/license'
+
+import ImportDialog from '@/components/DataImport/ImportDialog.vue'
+import SocialMediaManager from '@/components/DataImport/SocialMediaManager.vue'
+import type { ImportKindKey } from '@/api/dataImport'
 
 const router = useRouter()
-const licenseStore = useLicenseStore()
 
-// 检查是否为 PRO 用户
-const isPro = computed(() => licenseStore.isPro)
+const STOCK_KINDS: ImportKindKey[] = ['basic', 'quotes', 'financial', 'news', 'historical']
+const SOCIAL_KINDS: ImportKindKey[] = ['social']
+
+const importVisible = ref(false)
+const importKinds = ref<ImportKindKey[]>(STOCK_KINDS)
+const socialManager = ref<InstanceType<typeof SocialMediaManager>>()
+
+const openImport = (kinds: ImportKindKey[]) => {
+  importKinds.value = kinds
+  importVisible.value = true
+}
+
+// 社媒消息导入成功后刷新下方列表与统计
+const onImported = (kind: ImportKindKey) => {
+  if (kind === 'social') socialManager.value?.reload()
+}
 
 // 跳转到股票数据 API 指南
 const goToStockDataApiGuide = () => {
