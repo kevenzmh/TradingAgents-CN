@@ -698,6 +698,29 @@ const routes: RouteRecordRaw[] = [
       }
     ]
   },
+  // 交易监控（告警 / 指标 / 风控限额热更新）
+  {
+    path: '/trading-observability',
+    name: 'TradingObservability',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: '交易监控',
+      icon: 'Monitor',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: '',
+        name: 'TradingObservabilityHome',
+        component: () => import('@/views/TradingObservability/index.vue'),
+        meta: {
+          title: '交易监控',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
   // 分析流模块（Pro）→ pro.routes.ts
   ...proWorkflowRoutes,
   // 分析流管理/编辑器（社区版重建：后端 /api/workflows CRUD 完整可用）

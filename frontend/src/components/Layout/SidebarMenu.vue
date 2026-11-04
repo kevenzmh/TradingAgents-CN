@@ -120,6 +120,11 @@
       <template #title>交易信号中心</template>
     </el-menu-item>
 
+    <el-menu-item index="/trading-observability">
+      <el-icon><Monitor /></el-icon>
+      <template #title>交易监控</template>
+    </el-menu-item>
+
     <!-- Pro：交易计划（社区版发布时自动隐藏，见 navigation.pro.ts） -->
     <el-menu-item v-for="item in proTradingSystemMenuItems" :key="item.path" :index="item.path">
       <el-icon><Tickets /></el-icon>
@@ -247,6 +252,7 @@ import {
   Coin,
   MagicStick,
   Warning,
+  Monitor,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
