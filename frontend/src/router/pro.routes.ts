@@ -15,6 +15,18 @@ export const proSettingsChildren: RouteRecordRaw[] = [
     name: 'PromptTemplates',
     component: () => import('@/views/Settings/PromptTemplates.vue'),
     meta: { title: '提示词模板', requiresAuth: true }
+  },
+  {
+    path: 'email',
+    name: 'EmailSettings',
+    component: () => import('@/views/Settings/EmailSettings.vue'),
+    meta: { title: '邮件通知', requiresAuth: true }
+  },
+  {
+    path: 'channel-configs',
+    name: 'ChannelConfigs',
+    component: () => import('@/views/Settings/ChannelConfigs.vue'),
+    meta: { title: '渠道推送', requiresAuth: true }
   }
 ]
 export const proLearningChildren: RouteRecordRaw[] = []

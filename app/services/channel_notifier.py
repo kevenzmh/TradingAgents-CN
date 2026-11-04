@@ -9,6 +9,7 @@
 集成点：NotificationsService.create_and_publish() 末尾调用 dispatch()
 """
 import asyncio
+import html
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -186,7 +187,7 @@ class ChannelNotifier:
         await email_service._send_smtp(
             to_email=channel.email_address,
             subject=f"[TradingAgents-CN] {title}",
-            html_content=f"<p>{content}</p>",
+            html_content=f"<p>{html.escape(content)}</p>",
             text_content=content,
             smtp_config=smtp_config,
         )

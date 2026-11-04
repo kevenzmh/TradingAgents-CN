@@ -208,6 +208,15 @@ try:
 except Exception as _pt_exc:  # pragma: no cover
     logger.warning(f"⚠️ 提示词模板路由注册失败（不影响启动）: {_pt_exc}")
 
+# 渠道推送（飞书/钉钉/企微/邮件）与邮件通知设置
+for _mod_name, _reg_name, _tag in (("channel_configs", "channel_configs", "channel-configs"),
+                                   ("email_settings", "email_settings", "email-settings")):
+    try:
+        _mod = __import__(f"app.pro.routers.{_mod_name}", fromlist=["router"])
+        COMMUNITY_ROUTERS.append((_mod.router, _reg_name, {"tags": [_tag]}))
+    except Exception as _notify_exc:  # pragma: no cover
+        logger.warning(f"⚠️ {_mod_name} 路由注册失败（不影响启动）: {_notify_exc}")
+
 # 交易可观测性（第二阶段：Prometheus 指标 + 告警管理）
 try:
     from app.pro.routers import trading_observability as trading_obs_router

@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 # SMTP配置集合名
 SMTP_CONFIG_COLLECTION = "smtp_config"
+# SMTP 连接/收发超时（秒）：无超时时服务器无响应会长期占住线程池线程
+SMTP_TIMEOUT = 20
 
 
 class EmailService:
@@ -496,59 +498,100 @@ class EmailService:
         smtp_config: Dict[str, Any],
         attachments: Optional[List[Tuple[str, bytes, str]]] = None
     ) -> bool:
-        """同步SMTP发送（支持附件）"""
+        """同步SMTP发送（支持附件），失败返回 False（原因写日志）"""
         try:
-            # 如果有附件，使用 mixed 类型；否则使用 alternative
-            if attachments:
-                msg = MIMEMultipart("mixed")
-                # 创建正文部分
-                body_part = MIMEMultipart("alternative")
-                body_part.attach(MIMEText(text_content, "plain", "utf-8"))
-                body_part.attach(MIMEText(html_content, "html", "utf-8"))
-                msg.attach(body_part)
-
-                # 添加附件
-                for filename, content, mime_type in attachments:
-                    try:
-                        main_type, sub_type = mime_type.split("/", 1)
-                        attachment = MIMEBase(main_type, sub_type)
-                        attachment.set_payload(content)
-                        encoders.encode_base64(attachment)
-                        attachment.add_header(
-                            "Content-Disposition",
-                            "attachment",
-                            filename=filename
-                        )
-                        msg.attach(attachment)
-                        logger.info(f"📎 添加附件: {filename} ({len(content)} bytes)")
-                    except Exception as att_err:
-                        logger.warning(f"⚠️ 添加附件 {filename} 失败: {att_err}")
-            else:
-                msg = MIMEMultipart("alternative")
-                msg.attach(MIMEText(text_content, "plain", "utf-8"))
-                msg.attach(MIMEText(html_content, "html", "utf-8"))
-
-            msg["Subject"] = subject
-            msg["From"] = f"{smtp_config['from_name']} <{smtp_config['from_email']}>"
-            msg["To"] = to_email
-
-            # 发送邮件
-            if smtp_config.get("use_ssl"):
-                server = smtplib.SMTP_SSL(smtp_config["host"], smtp_config["port"])
-            else:
-                server = smtplib.SMTP(smtp_config["host"], smtp_config["port"])
-                if smtp_config.get("use_tls"):
-                    server.starttls()
-
-            server.login(smtp_config["username"], smtp_config["password"])
-            server.send_message(msg)
-            server.quit()
-
+            self._deliver_sync(to_email, subject, html_content, text_content, smtp_config, attachments)
             return True
-
         except Exception as e:
             logger.error(f"SMTP发送失败: {e}")
             return False
+
+    def _deliver_sync(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        smtp_config: Dict[str, Any],
+        attachments: Optional[List[Tuple[str, bytes, str]]] = None
+    ) -> None:
+        """同步投递，失败抛出异常（供需要真实失败原因的调用方使用）"""
+        # 如果有附件，使用 mixed 类型；否则使用 alternative
+        if attachments:
+            msg = MIMEMultipart("mixed")
+            # 创建正文部分
+            body_part = MIMEMultipart("alternative")
+            body_part.attach(MIMEText(text_content, "plain", "utf-8"))
+            body_part.attach(MIMEText(html_content, "html", "utf-8"))
+            msg.attach(body_part)
+
+            # 添加附件
+            for filename, content, mime_type in attachments:
+                try:
+                    main_type, sub_type = mime_type.split("/", 1)
+                    attachment = MIMEBase(main_type, sub_type)
+                    attachment.set_payload(content)
+                    encoders.encode_base64(attachment)
+                    attachment.add_header(
+                        "Content-Disposition",
+                        "attachment",
+                        filename=filename
+                    )
+                    msg.attach(attachment)
+                    logger.info(f"📎 添加附件: {filename} ({len(content)} bytes)")
+                except Exception as att_err:
+                    logger.warning(f"⚠️ 添加附件 {filename} 失败: {att_err}")
+        else:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(text_content, "plain", "utf-8"))
+            msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+        msg["Subject"] = subject
+        msg["From"] = f"{smtp_config['from_name']} <{smtp_config['from_email']}>"
+        msg["To"] = to_email
+
+        # 发送邮件
+        if smtp_config.get("use_ssl"):
+            server = smtplib.SMTP_SSL(smtp_config["host"], smtp_config["port"], timeout=SMTP_TIMEOUT)
+        else:
+            server = smtplib.SMTP(smtp_config["host"], smtp_config["port"], timeout=SMTP_TIMEOUT)
+
+        try:
+            if not smtp_config.get("use_ssl") and smtp_config.get("use_tls"):
+                server.starttls()
+            server.login(smtp_config["username"], smtp_config["password"])
+            server.send_message(msg)
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+
+    async def deliver(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        smtp_config: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        """异步投递并返回 (是否成功, 失败原因)；用于测试邮件等需要回显真实原因的场景"""
+        import asyncio
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._deliver_sync, to_email, subject, html_content, text_content, smtp_config, None
+            )
+            return True, "发送成功"
+        except smtplib.SMTPAuthenticationError:
+            return False, "SMTP 认证失败，请检查用户名和密码（部分邮箱需使用授权码）"
+        except smtplib.SMTPRecipientsRefused:
+            return False, "收件人地址被服务器拒绝"
+        except (smtplib.SMTPConnectError, ConnectionError, TimeoutError, OSError) as e:
+            return False, f"无法连接 SMTP 服务器：{type(e).__name__}"
+        except Exception as e:
+            return False, f"发送失败：{type(e).__name__}: {e}"
+
+
 
 
 # 全局实例

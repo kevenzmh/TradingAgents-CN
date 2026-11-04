@@ -35,8 +35,11 @@ export const proWorkflowMenu: ProMenuGroup = {
   ]
 }
 
-/** 个人设置中的 Pro 项（社区版：空） */
-export const proPersonalSettingsItems: ProMenuItem[] = []
+/** 个人设置中的 Pro 项 */
+export const proPersonalSettingsItems: ProMenuItem[] = [
+  { path: '/settings/email', label: '邮件通知' },
+  { path: '/settings/channel-configs', label: '渠道推送' }
+]
 
 /** 授权管理菜单项（社区版：空） */
 export const proLicenseMenuItem: ProMenuItem | null = null
