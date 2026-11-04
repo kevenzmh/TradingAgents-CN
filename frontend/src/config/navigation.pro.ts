@@ -46,7 +46,9 @@ export const proLicenseMenuItem: ProMenuItem | null = null
 
 /** 分析配置中的 Pro 项 */
 export const proAnalysisSettingsItems: ProMenuItem[] = [
-  { path: '/settings/templates', label: '提示词模板' }
+  { path: '/settings/templates', label: '提示词模板' },
+  { path: '/settings/watchlist-groups', label: '自选股分组' },
+  { path: '/settings/scheduled-analysis', label: '定时分析' }
 ]
 
 /** 系统管理中的 Pro 项（社区版：空） */

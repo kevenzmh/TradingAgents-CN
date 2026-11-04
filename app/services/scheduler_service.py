@@ -301,7 +301,7 @@ class SchedulerService:
         Returns:
             是否成功
         """
-        from apscheduler.triggers.cron import CronTrigger
+        from app.utils.cron import standard_cron_trigger
         from app.core.config import settings
 
         try:
@@ -314,7 +314,7 @@ class SchedulerService:
 
             # 验证CRON表达式格式
             try:
-                new_trigger = CronTrigger.from_crontab(cron_expression, timezone=settings.TIMEZONE)
+                new_trigger = standard_cron_trigger(cron_expression, timezone=settings.TIMEZONE)
             except Exception as e:
                 logger.error(f"❌ 无效的CRON表达式 '{cron_expression}': {e}")
                 return False

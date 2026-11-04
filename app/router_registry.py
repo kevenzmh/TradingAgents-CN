@@ -208,9 +208,11 @@ try:
 except Exception as _pt_exc:  # pragma: no cover
     logger.warning(f"⚠️ 提示词模板路由注册失败（不影响启动）: {_pt_exc}")
 
-# 渠道推送（飞书/钉钉/企微/邮件）与邮件通知设置
+# 渠道推送 / 邮件设置 / 自选股分组 / 定时分析
 for _mod_name, _reg_name, _tag in (("channel_configs", "channel_configs", "channel-configs"),
-                                   ("email_settings", "email_settings", "email-settings")):
+                                   ("email_settings", "email_settings", "email-settings"),
+                                   ("watchlist_groups", "watchlist_groups", "watchlist-groups"),
+                                   ("scheduled_analysis", "scheduled_analysis", "scheduled-analysis")):
     try:
         _mod = __import__(f"app.pro.routers.{_mod_name}", fromlist=["router"])
         COMMUNITY_ROUTERS.append((_mod.router, _reg_name, {"tags": [_tag]}))

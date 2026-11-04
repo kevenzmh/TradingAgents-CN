@@ -822,6 +822,9 @@ async def run_scheduled_analysis_slot(config_id: str, user_id: str, slot_index: 
     logger.info(f"   时间段索引: {slot_index}")
     logger.info("=" * 70)
 
+    # db 必须在分支之前赋值：下面 workflow 分支会把它传给 _execute_general_workflow_slot，
+    # 而函数内后面还有 `db = ...`，若不提前赋值会触发 UnboundLocalError
+    db = get_mongo_db()
     try:
         # 🔥 获取系统默认模型配置（从数据库）
         system_default_models = await get_system_default_models()
@@ -882,7 +885,6 @@ async def run_scheduled_analysis_slot(config_id: str, user_id: str, slot_index: 
             return
 
         # 获取分组信息
-        db = get_mongo_db()
         groups = []
         for group_id in group_ids:
             try:
@@ -966,11 +968,12 @@ async def run_scheduled_analysis_slot(config_id: str, user_id: str, slot_index: 
             failed=total_failed,
             results=[],
             analysis_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            send_in_app_notification=True,
+            send_in_app_notification=bool(config.get("notify_on_complete", True)),
             send_email_notification=False,
         )
 
-        if all_task_ids:
+        # 邮件：仅当配置勾选「发送邮件」时才等待任务结束并发送（再受用户邮件设置约束）
+        if all_task_ids and config.get("send_email", False):
             asyncio.create_task(
                 _send_scheduled_completion_email_when_ready(
                     user_id=user_id,

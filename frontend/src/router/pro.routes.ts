@@ -27,6 +27,18 @@ export const proSettingsChildren: RouteRecordRaw[] = [
     name: 'ChannelConfigs',
     component: () => import('@/views/Settings/ChannelConfigs.vue'),
     meta: { title: '渠道推送', requiresAuth: true }
+  },
+  {
+    path: 'watchlist-groups',
+    name: 'WatchlistGroups',
+    component: () => import('@/views/Settings/WatchlistGroups.vue'),
+    meta: { title: '自选股分组', requiresAuth: true }
+  },
+  {
+    path: 'scheduled-analysis',
+    name: 'ScheduledAnalysis',
+    component: () => import('@/views/Settings/ScheduledAnalysis.vue'),
+    meta: { title: '定时分析', requiresAuth: true }
   }
 ]
 export const proLearningChildren: RouteRecordRaw[] = []

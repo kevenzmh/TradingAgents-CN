@@ -62,6 +62,7 @@ from app.worker.favorites_sync_task import run_favorites_data_sync
 from app.middleware.operation_log_middleware import OperationLogMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from app.utils.cron import standard_cron_trigger
 from apscheduler.triggers.interval import IntervalTrigger
 from app.services.quotes_ingestion_service import QuotesIngestionService
 
@@ -600,7 +601,7 @@ async def lifespan(app: FastAPI):
                 # 如果提供了cron表达式
                 scheduler.add_job(
                     scheduled_sync_with_db_priority,
-                    CronTrigger.from_crontab(settings.SYNC_STOCK_BASICS_CRON, timezone=settings.TIMEZONE),
+                    standard_cron_trigger(settings.SYNC_STOCK_BASICS_CRON, timezone=settings.TIMEZONE),
                     id="basics_sync_service",
                     name="股票基础信息同步（多数据源）"
                 )
@@ -633,7 +634,7 @@ async def lifespan(app: FastAPI):
         # 基础信息同步任务
         scheduler.add_job(
             run_tushare_basic_info_sync,
-            CronTrigger.from_crontab(settings.TUSHARE_BASIC_INFO_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.TUSHARE_BASIC_INFO_SYNC_CRON, timezone=settings.TIMEZONE),
             id="tushare_basic_info_sync",
             name="股票基础信息同步（Tushare）",
             kwargs={"force_update": False}
@@ -648,7 +649,7 @@ async def lifespan(app: FastAPI):
         # 避免与每小时31分的定时任务冲突（免费用户每小时只能调用一次）
         # scheduler.add_job(
         #     run_tushare_quotes_sync,
-        #     CronTrigger.from_crontab(settings.TUSHARE_QUOTES_SYNC_CRON, timezone=settings.TIMEZONE),
+        #     standard_cron_trigger(settings.TUSHARE_QUOTES_SYNC_CRON, timezone=settings.TIMEZONE),
         #     id="tushare_quotes_sync",
         #     name="实时行情同步（Tushare）"
         # )
@@ -657,7 +658,7 @@ async def lifespan(app: FastAPI):
         # Tushare实时行情每小时同步任务（免费用户每小时只能调用一次）
         scheduler.add_job(
             run_tushare_realtime_quotes_hourly,
-            CronTrigger.from_crontab(settings.TUSHARE_REALTIME_QUOTES_HOURLY_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.TUSHARE_REALTIME_QUOTES_HOURLY_CRON, timezone=settings.TIMEZONE),
             id="tushare_realtime_quotes_hourly",
             name="实时行情每小时同步（Tushare，免费用户每小时31分）"
         )
@@ -670,7 +671,7 @@ async def lifespan(app: FastAPI):
         # 历史数据同步任务
         scheduler.add_job(
             run_tushare_historical_sync,
-            CronTrigger.from_crontab(settings.TUSHARE_HISTORICAL_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.TUSHARE_HISTORICAL_SYNC_CRON, timezone=settings.TIMEZONE),
             id="tushare_historical_sync",
             name="历史数据同步（Tushare）",
             kwargs={"incremental": True}
@@ -684,7 +685,7 @@ async def lifespan(app: FastAPI):
         # 财务数据同步任务
         scheduler.add_job(
             run_tushare_financial_sync,
-            CronTrigger.from_crontab(settings.TUSHARE_FINANCIAL_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.TUSHARE_FINANCIAL_SYNC_CRON, timezone=settings.TIMEZONE),
             id="tushare_financial_sync",
             name="财务数据同步（Tushare）"
         )
@@ -697,7 +698,7 @@ async def lifespan(app: FastAPI):
         # 状态检查任务
         scheduler.add_job(
             run_tushare_status_check,
-            CronTrigger.from_crontab(settings.TUSHARE_STATUS_CHECK_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.TUSHARE_STATUS_CHECK_CRON, timezone=settings.TIMEZONE),
             id="tushare_status_check",
             name="数据源状态检查（Tushare）"
         )
@@ -713,7 +714,7 @@ async def lifespan(app: FastAPI):
         # 基础信息同步任务
         scheduler.add_job(
             run_akshare_basic_info_sync,
-            CronTrigger.from_crontab(settings.AKSHARE_BASIC_INFO_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.AKSHARE_BASIC_INFO_SYNC_CRON, timezone=settings.TIMEZONE),
             id="akshare_basic_info_sync",
             name="股票基础信息同步（AKShare）",
             kwargs={"force_update": False}
@@ -727,7 +728,7 @@ async def lifespan(app: FastAPI):
         # 实时行情同步任务
         scheduler.add_job(
             run_akshare_quotes_sync,
-            CronTrigger.from_crontab(settings.AKSHARE_QUOTES_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.AKSHARE_QUOTES_SYNC_CRON, timezone=settings.TIMEZONE),
             id="akshare_quotes_sync",
             name="实时行情同步（AKShare）"
         )
@@ -740,7 +741,7 @@ async def lifespan(app: FastAPI):
         # 历史数据同步任务
         scheduler.add_job(
             run_akshare_historical_sync,
-            CronTrigger.from_crontab(settings.AKSHARE_HISTORICAL_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.AKSHARE_HISTORICAL_SYNC_CRON, timezone=settings.TIMEZONE),
             id="akshare_historical_sync",
             name="历史数据同步（AKShare）",
             kwargs={"incremental": True}
@@ -754,7 +755,7 @@ async def lifespan(app: FastAPI):
         # 财务数据同步任务
         scheduler.add_job(
             run_akshare_financial_sync,
-            CronTrigger.from_crontab(settings.AKSHARE_FINANCIAL_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.AKSHARE_FINANCIAL_SYNC_CRON, timezone=settings.TIMEZONE),
             id="akshare_financial_sync",
             name="财务数据同步（AKShare）"
         )
@@ -767,7 +768,7 @@ async def lifespan(app: FastAPI):
         # 状态检查任务
         scheduler.add_job(
             run_akshare_status_check,
-            CronTrigger.from_crontab(settings.AKSHARE_STATUS_CHECK_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.AKSHARE_STATUS_CHECK_CRON, timezone=settings.TIMEZONE),
             id="akshare_status_check",
             name="数据源状态检查（AKShare）"
         )
@@ -783,7 +784,7 @@ async def lifespan(app: FastAPI):
         # 基础信息同步任务
         scheduler.add_job(
             run_baostock_basic_info_sync,
-            CronTrigger.from_crontab(settings.BAOSTOCK_BASIC_INFO_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.BAOSTOCK_BASIC_INFO_SYNC_CRON, timezone=settings.TIMEZONE),
             id="baostock_basic_info_sync",
             name="股票基础信息同步（BaoStock）"
         )
@@ -796,7 +797,7 @@ async def lifespan(app: FastAPI):
         # 日K线同步任务（注意：BaoStock不支持实时行情）
         scheduler.add_job(
             run_baostock_daily_quotes_sync,
-            CronTrigger.from_crontab(settings.BAOSTOCK_DAILY_QUOTES_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.BAOSTOCK_DAILY_QUOTES_SYNC_CRON, timezone=settings.TIMEZONE),
             id="baostock_daily_quotes_sync",
             name="日K线数据同步（BaoStock）"
         )
@@ -809,7 +810,7 @@ async def lifespan(app: FastAPI):
         # 历史数据同步任务
         scheduler.add_job(
             run_baostock_historical_sync,
-            CronTrigger.from_crontab(settings.BAOSTOCK_HISTORICAL_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.BAOSTOCK_HISTORICAL_SYNC_CRON, timezone=settings.TIMEZONE),
             id="baostock_historical_sync",
             name="历史数据同步（BaoStock）"
         )
@@ -822,7 +823,7 @@ async def lifespan(app: FastAPI):
         # 状态检查任务
         scheduler.add_job(
             run_baostock_status_check,
-            CronTrigger.from_crontab(settings.BAOSTOCK_STATUS_CHECK_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.BAOSTOCK_STATUS_CHECK_CRON, timezone=settings.TIMEZONE),
             id="baostock_status_check",
             name="数据源状态检查（BaoStock）"
         )
@@ -837,7 +838,7 @@ async def lifespan(app: FastAPI):
 
         scheduler.add_job(
             run_etf_sync,
-            CronTrigger.from_crontab(settings.ETF_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.ETF_SYNC_CRON, timezone=settings.TIMEZONE),
             id="etf_sync",
             name="ETF 数据同步",
             kwargs={"force_update": False, "days": settings.ETF_SYNC_DAYS, "job_id": "etf_sync"}
@@ -857,7 +858,7 @@ async def lifespan(app: FastAPI):
         
         scheduler.add_job(
             run_favorites_data_sync,
-            CronTrigger.from_crontab(settings.FAVORITES_DATA_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.FAVORITES_DATA_SYNC_CRON, timezone=settings.TIMEZONE),
             id="favorites_data_sync",
             name="股票关注列表A股数据同步（历史数据+财务数据）"
         )
@@ -902,7 +903,7 @@ async def lifespan(app: FastAPI):
 
         scheduler.add_job(
             run_news_sync,
-            CronTrigger.from_crontab(settings.NEWS_SYNC_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.NEWS_SYNC_CRON, timezone=settings.TIMEZONE),
             id="news_sync",
             name="新闻数据同步（AKShare - 仅股票关注列表）"
         )
@@ -916,7 +917,7 @@ async def lifespan(app: FastAPI):
         from app.worker.watchlist_analysis_task import run_watchlist_analysis
         scheduler.add_job(
             run_watchlist_analysis,
-            CronTrigger.from_crontab(settings.WATCHLIST_ANALYSIS_CRON, timezone=settings.TIMEZONE),
+            standard_cron_trigger(settings.WATCHLIST_ANALYSIS_CRON, timezone=settings.TIMEZONE),
             id="watchlist_analysis",
             name="股票关注列表定时分析"
         )
@@ -994,7 +995,7 @@ async def lifespan(app: FastAPI):
         if settings.DECISION_SETTLEMENT_ENABLED:
             try:
                 from apscheduler.triggers.cron import CronTrigger as _CT
-                _settle_trigger = _CT.from_crontab(
+                _settle_trigger = standard_cron_trigger(
                     settings.DECISION_SETTLEMENT_CRON, timezone=settings.TIMEZONE
                 )
             except Exception as _cron_err:
@@ -1003,7 +1004,7 @@ async def lifespan(app: FastAPI):
                     f"退回默认工作日15:30: {_cron_err}"
                 )
                 from apscheduler.triggers.cron import CronTrigger as _CT
-                _settle_trigger = _CT(hour=15, minute=30, day_of_week="1-5", timezone=settings.TIMEZONE)
+                _settle_trigger = _CT(hour=15, minute=30, day_of_week="mon-fri", timezone=settings.TIMEZONE)
 
             scheduler.add_job(
                 _settle_pending_decisions_job,
@@ -1166,6 +1167,13 @@ async def lifespan(app: FastAPI):
         # 设置调度器实例到服务中，以便API可以管理任务
         set_scheduler_instance(scheduler)
         logger.info("✅ 调度器服务已初始化")
+
+        # 重新挂载用户配置的定时分析（APScheduler 为内存存储，重启后需从数据库恢复）
+        try:
+            from app.pro.routers.scheduled_analysis import load_all_enabled_configs
+            await load_all_enabled_configs()
+        except Exception as e:
+            logger.warning(f"⚠️ 加载定时分析配置失败（不影响启动）: {e}")
         
         # 🔥 检测服务重启导致的挂起任务
         try:
