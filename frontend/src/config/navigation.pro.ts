@@ -41,8 +41,10 @@ export const proPersonalSettingsItems: ProMenuItem[] = []
 /** 授权管理菜单项（社区版：空） */
 export const proLicenseMenuItem: ProMenuItem | null = null
 
-/** 分析配置中的 Pro 项（社区版：空） */
-export const proAnalysisSettingsItems: ProMenuItem[] = []
+/** 分析配置中的 Pro 项 */
+export const proAnalysisSettingsItems: ProMenuItem[] = [
+  { path: '/settings/templates', label: '提示词模板' }
+]
 
 /** 系统管理中的 Pro 项（社区版：空） */
 export const proAdminSettingsItems: ProMenuItem[] = []

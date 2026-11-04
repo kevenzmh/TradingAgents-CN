@@ -199,6 +199,15 @@ try:
 except Exception as _di_exc:  # pragma: no cover
     logger.warning(f"⚠️ 数据导入路由注册失败（不影响启动）: {_di_exc}")
 
+# 提示词模板管理（Agent 运行时 template_client 读取的 prompt_templates / user_template_configs）
+try:
+    from app.pro.routers import prompt_templates as prompt_templates_router
+    COMMUNITY_ROUTERS.append(
+        (prompt_templates_router.router, "prompt_templates", {"tags": ["prompt-templates"]})
+    )
+except Exception as _pt_exc:  # pragma: no cover
+    logger.warning(f"⚠️ 提示词模板路由注册失败（不影响启动）: {_pt_exc}")
+
 # 交易可观测性（第二阶段：Prometheus 指标 + 告警管理）
 try:
     from app.pro.routers import trading_observability as trading_obs_router
