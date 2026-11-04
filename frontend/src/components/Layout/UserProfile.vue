@@ -39,6 +39,18 @@
             <el-icon><Setting /></el-icon>
             设置
           </el-dropdown-item>
+          <el-dropdown-item command="learning">
+            <el-icon><Reading /></el-icon>
+            学习中心
+          </el-dropdown-item>
+          <el-dropdown-item command="guide">
+            <el-icon><Document /></el-icon>
+            使用指南
+          </el-dropdown-item>
+          <el-dropdown-item command="about">
+            <el-icon><InfoFilled /></el-icon>
+            关于
+          </el-dropdown-item>
           <el-dropdown-item divided command="logout">
             <el-icon><SwitchButton /></el-icon>
             退出登录
@@ -56,7 +68,7 @@ import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { useLicenseStore } from '@/stores/license'
-import { User, Setting, SwitchButton, Star, UserFilled } from '@element-plus/icons-vue'
+import { User, Setting, SwitchButton, Star, UserFilled, Reading, Document, InfoFilled } from '@element-plus/icons-vue'
 
 // 🔧 京东云模式
 const isJdyunMode = import.meta.env.VITE_JDYUN_MODE === 'true'
@@ -115,6 +127,15 @@ const handleCommand = async (command: string) => {
   switch (command) {
     case 'settings':
       router.push('/settings')
+      break
+    case 'learning':
+      router.push('/learning')
+      break
+    case 'guide':
+      router.push('/guide')
+      break
+    case 'about':
+      router.push('/about')
       break
     case 'logout':
       if (isJdyunMode) {

@@ -154,24 +154,6 @@
         <el-menu-item index="/settings/update">系统更新</el-menu-item>
       </el-sub-menu>
     </el-sub-menu>
-
-    <!-- ==================== 辅助 ==================== -->
-    <div class="menu-divider" />
-
-    <el-menu-item index="/learning">
-      <el-icon><Reading /></el-icon>
-      <template #title>学习中心</template>
-    </el-menu-item>
-
-    <el-menu-item index="/guide">
-      <el-icon><Document /></el-icon>
-      <template #title>使用指南</template>
-    </el-menu-item>
-
-    <el-menu-item index="/about">
-      <el-icon><InfoFilled /></el-icon>
-      <template #title>关于</template>
-    </el-menu-item>
   </el-menu>
 </template>
 
@@ -195,11 +177,8 @@ import {
 } from '@/config/navigation.pro'
 import {
   Odometer,
-  Reading,
   TrendCharts,
-  Document,
   Setting,
-  InfoFilled,
   PieChart,
   Key,
   MagicStick
@@ -246,10 +225,5 @@ const activeMenu = computed(() => {
 .menu-tag {
   margin-left: 4px;
   transform: scale(0.85);
-}
-
-.menu-divider {
-  margin: 8px 16px;
-  border-top: 1px solid var(--el-border-color-lighter);
 }
 </style>
