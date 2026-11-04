@@ -19,8 +19,10 @@ export interface ProMenuGroup {
   children: ProMenuItem[]
 }
 
-/** 顶级菜单中的 Pro 项（社区版：空） */
-export const proTopLevelItems: ProMenuItem[] = []
+/** 顶级菜单中的 Pro 项 */
+export const proTopLevelItems: ProMenuItem[] = [
+  { path: '/agent-workshop', label: 'Agent 工坊' }
+]
 
 /** 顶级菜单中的 Pro 项·交易计划 */
 export const proTradingSystemMenuItems: ProMenuItem[] = [

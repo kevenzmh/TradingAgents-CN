@@ -44,6 +44,7 @@ VERSION_COLLECTION = "agent_versions"
 CONFIG_COLLECTION = "agent_configs"
 TEMPLATE_COLLECTION = "prompt_templates"
 EVALUATION_COLLECTION = "agent_evaluations"
+MIN_PASS_REPORT_CHARS = 100
 
 # 版本状态机（消费方 _compute_workshop_phase 依赖这些字面量）
 VERSION_DRAFT = "draft"
@@ -642,7 +643,9 @@ class AgentWorkshopService:
         if not version_doc:
             return {"status": "error", "message": f"版本 {version_id} 不存在"}
 
-        report_ok = bool(((runtime_result or {}).get("report") or "").strip())
+        report_text = str((runtime_result or {}).get("report") or "").strip()
+        # 通过的最低门槛：有实质内容（过短的输出通常是报错信息或空模板，不应放行发布）
+        report_ok = len(report_text) >= MIN_PASS_REPORT_CHARS
         if report_ok:
             decision = "pass"
         elif user_feedback and any(k in user_feedback for k in ("差", "不对", "失败", "不行")):
@@ -664,7 +667,8 @@ class AgentWorkshopService:
             },
             "created_at": _now_iso(),
         }
-        await self.db[EVALUATION_COLLECTION].insert_one(evaluation_doc)
+        # 传副本给 insert_one：motor 会就地注入 _id（ObjectId），直接返回原 dict 会让路由层 JSON 序列化失败
+        await self.db[EVALUATION_COLLECTION].insert_one(dict(evaluation_doc))
 
         next_status = VERSION_PUBLISH_READY if decision == "pass" else VERSION_EVALUATION
         await self.db[VERSION_COLLECTION].update_one(
@@ -698,6 +702,14 @@ class AgentWorkshopService:
             return {
                 "status": "error",
                 "message": "发布前需要至少一次评估通过（decision=pass）；请先运行真数据测试并评估",
+                "version_id": version_id,
+            }
+
+        # 评估通过之后若又重新测试，状态会回到 evaluation：旧的 pass 不再代表当前输出，必须重新评估
+        if str(version_doc.get("status") or "") not in (VERSION_PUBLISH_READY, VERSION_TESTING):
+            return {
+                "status": "error",
+                "message": "最近一次测试之后还没有重新评估，请先评估当前版本的测试输出",
                 "version_id": version_id,
             }
 

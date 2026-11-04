@@ -6,7 +6,21 @@
  */
 import type { RouteRecordRaw } from 'vue-router'
 
-export const proWorkflowRoutes: RouteRecordRaw[] = []
+export const proWorkflowRoutes: RouteRecordRaw[] = [
+  {
+    path: '/agent-workshop',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'AgentWorkshop',
+        component: () => import('@/views/AgentWorkshop/index.vue'),
+        meta: { title: 'Agent 工坊', requiresAuth: true }
+      }
+    ]
+  }
+]
 export const proTradingSystemRoutes: RouteRecordRaw[] = [
   {
     path: '/trading-system',
