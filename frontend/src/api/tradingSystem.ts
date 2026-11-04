@@ -72,3 +72,42 @@ export const activateTradingSystem = async (systemId: string) => {
 export const deleteTradingSystem = async (systemId: string) => {
   return ApiClient.delete(`/api/trading-systems/${systemId}`)
 }
+
+export interface TradingSystemDetail {
+  id: string
+  name: string
+  description: string | null
+  style: string
+  risk_profile: string
+  is_active: boolean
+  template_id?: string
+  data: Record<string, any>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface TradingSystemPayload {
+  name?: string
+  description?: string
+  style?: string
+  is_active?: boolean
+  data?: Record<string, any>
+}
+
+/** 交易计划详情（含规则数据） */
+export const getTradingSystem = async (systemId: string): Promise<TradingSystemDetail> => {
+  const res: any = await ApiClient.get(`/api/trading-systems/${systemId}`, undefined, { showLoading: false })
+  const doc = res?.data || {}
+  return { ...doc, id: doc.id || doc._id }
+}
+
+/** 新建交易计划（自定义） */
+export const createTradingSystem = async (payload: TradingSystemPayload & { name: string }) => {
+  const res: any = await ApiClient.post('/api/trading-systems', payload)
+  return res.data as { id: string }
+}
+
+/** 更新交易计划 */
+export const updateTradingSystem = async (systemId: string, payload: TradingSystemPayload) => {
+  return ApiClient.put(`/api/trading-systems/${systemId}`, payload)
+}

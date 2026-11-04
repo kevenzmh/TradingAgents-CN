@@ -1,4 +1,4 @@
-"""交易计划 API 路由（重建：原 Pro 交易计划管理随社区版剔除）
+"""交易计划 API 路由（Pro）
 
 前端消费方（均已存在、只差数据）：
 - PositionReviewDialog / StockOperationHistoryDialog 的"关联交易计划"下拉
@@ -6,10 +6,12 @@
 - 复盘引擎已支持 trading_system_id → trade_review_service._get_trading_system
   按 _id 从 trading_systems 集合读取——本路由只需按该集合形状写入
 
-模板数据源：前端 config/tradingSystemTemplates.ts（3 套系统模板）的同构副本，
-从模板一键创建，避免重建整套 Pro 可视化编辑器。
+规则存放在文档的 `data` 下（stock_selection / timing / position / holding /
+risk_management / review / discipline），复盘提示词由 app/services/trading_system_rules.py 渲染。
+模板数据源：前端 config/tradingSystemTemplates.ts（3 套系统模板）的同构副本。
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -18,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.database import get_mongo_db
+from app.core.permissions import require_pro
 from app.routers.auth_db import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -168,6 +171,69 @@ TRADING_SYSTEM_TEMPLATES: List[Dict[str, Any]] = [
 ]
 
 
+# ==================== 校验 ====================
+
+STYLES = ("short_term", "medium_term", "long_term")
+RISK_PROFILES = ("conservative", "balanced", "aggressive")
+DATA_SECTIONS = ("stock_selection", "timing", "position", "holding", "risk_management", "review", "discipline")
+MAX_SYSTEMS_PER_USER = 30
+MAX_NAME_LEN = 50
+MAX_DESC_LEN = 300
+MAX_DATA_BYTES = 64 * 1024
+
+
+def _clean_name(name: Any) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="交易计划名称不能为空")
+    name = name.strip()
+    if len(name) > MAX_NAME_LEN:
+        raise HTTPException(status_code=400, detail=f"名称不能超过 {MAX_NAME_LEN} 字符")
+    return name
+
+
+def _clean_style(style: Any) -> str:
+    if style not in STYLES:
+        raise HTTPException(status_code=400, detail=f"风格必须是 {' / '.join(STYLES)}")
+    return style
+
+
+def _clean_desc(desc: Any) -> Optional[str]:
+    if desc is None:
+        return None
+    desc = str(desc).strip()
+    if len(desc) > MAX_DESC_LEN:
+        raise HTTPException(status_code=400, detail=f"描述不能超过 {MAX_DESC_LEN} 字符")
+    return desc
+
+
+def _clean_data(data: Any) -> Dict[str, Any]:
+    """只保留已知的 7 个规则分区，并限制体积（防止把任意大对象写进库、再被塞进 LLM 提示词）。"""
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="规则数据必须是对象")
+    unknown = [k for k in data if k not in DATA_SECTIONS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"不支持的规则分区：{'、'.join(map(str, unknown))}")
+    for k, v in data.items():
+        if not isinstance(v, dict):
+            raise HTTPException(status_code=400, detail=f"规则分区 {k} 必须是对象")
+    if len(json.dumps(data, ensure_ascii=False)) > MAX_DATA_BYTES:
+        raise HTTPException(status_code=400, detail="规则内容过大")
+    return data
+
+
+async def _ensure_capacity_and_unique(db, user_id: str, name: str, exclude_oid=None) -> None:
+    coll = db[TRADING_SYSTEMS_COLLECTION]
+    q: Dict[str, Any] = {"user_id": user_id, "name": name}
+    if exclude_oid is not None:
+        q["_id"] = {"$ne": exclude_oid}
+    if await coll.find_one(q, {"_id": 1}):
+        raise HTTPException(status_code=409, detail=f"已存在同名交易计划：{name}")
+    if exclude_oid is None and await coll.count_documents({"user_id": user_id}) >= MAX_SYSTEMS_PER_USER:
+        raise HTTPException(status_code=400, detail=f"最多创建 {MAX_SYSTEMS_PER_USER} 个交易计划")
+
+
 # ==================== 请求/响应模型 ====================
 
 class CreateTradingSystemRequest(BaseModel):
@@ -261,10 +327,15 @@ async def get_trading_system(system_id: str, user: dict = Depends(get_current_us
     return {"success": True, "data": system, "message": "ok"}
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_pro)])
 async def create_trading_system(request: CreateTradingSystemRequest, user: dict = Depends(get_current_user)):
     """创建交易计划（自定义）"""
     db = get_mongo_db()
+    name = _clean_name(request.name)
+    style = _clean_style(request.style)
+    description = _clean_desc(request.description)
+    data = _clean_data(request.data)
+    await _ensure_capacity_and_unique(db, user["id"], name)
     # is_active=True 时清除其他默认
     if request.is_active:
         await db[TRADING_SYSTEMS_COLLECTION].update_many(
@@ -272,12 +343,12 @@ async def create_trading_system(request: CreateTradingSystemRequest, user: dict 
         )
     doc = {
         "user_id": user["id"],
-        "name": request.name,
-        "description": request.description,
-        "style": request.style,
+        "name": name,
+        "description": description,
+        "style": style,
         "risk_profile": "balanced",
         "is_active": request.is_active,
-        "data": request.data or {},
+        "data": data,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
     }
@@ -285,7 +356,7 @@ async def create_trading_system(request: CreateTradingSystemRequest, user: dict 
     return {"success": True, "data": {"id": str(result.inserted_id)}, "message": "交易计划创建成功"}
 
 
-@router.post("/from-template")
+@router.post("/from-template", dependencies=[Depends(require_pro)])
 async def create_from_template(request: CreateFromTemplateRequest, user: dict = Depends(get_current_user)):
     """从模板一键创建交易计划"""
     template = next((t for t in TRADING_SYSTEM_TEMPLATES if t["id"] == request.template_id), None)
@@ -293,9 +364,15 @@ async def create_from_template(request: CreateFromTemplateRequest, user: dict = 
         raise HTTPException(status_code=404, detail=f"模板不存在: {request.template_id}")
 
     db = get_mongo_db()
+    # 同一模板可重复创建：重名时自动加序号
+    name, n = template["name"], 2
+    while await db[TRADING_SYSTEMS_COLLECTION].find_one({"user_id": user["id"], "name": name}, {"_id": 1}):
+        name = f"{template['name']} {n}"
+        n += 1
+    await _ensure_capacity_and_unique(db, user["id"], name)
     doc = {
         "user_id": user["id"],
-        "name": template["name"],
+        "name": name,
         "description": template["description"],
         "style": template["style"],
         "risk_profile": template["risk_profile"],
@@ -306,10 +383,10 @@ async def create_from_template(request: CreateFromTemplateRequest, user: dict = 
         "updated_at": datetime.utcnow(),
     }
     result = await db[TRADING_SYSTEMS_COLLECTION].insert_one(doc)
-    return {"success": True, "data": {"id": str(result.inserted_id)}, "message": f"已从模板创建「{template['name']}」"}
+    return {"success": True, "data": {"id": str(result.inserted_id)}, "message": f"已从模板创建「{name}」"}
 
 
-@router.put("/{system_id}")
+@router.put("/{system_id}", dependencies=[Depends(require_pro)])
 async def update_trading_system(
     system_id: str,
     request: UpdateTradingSystemRequest,
@@ -317,16 +394,19 @@ async def update_trading_system(
 ):
     """更新交易计划"""
     db = get_mongo_db()
-    await _get_owned_system(db, system_id, user["id"])
+    existing = await _get_owned_system(db, system_id, user["id"])
     updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
     if request.name is not None:
-        updates["name"] = request.name
+        name = _clean_name(request.name)
+        if name != existing.get("name"):
+            await _ensure_capacity_and_unique(db, user["id"], name, existing["_id"])
+        updates["name"] = name
     if request.description is not None:
-        updates["description"] = request.description
+        updates["description"] = _clean_desc(request.description)
     if request.style is not None:
-        updates["style"] = request.style
+        updates["style"] = _clean_style(request.style)
     if request.data is not None:
-        updates["data"] = request.data
+        updates["data"] = _clean_data(request.data)
     if request.is_active is not None:
         if request.is_active:
             await db[TRADING_SYSTEMS_COLLECTION].update_many(
@@ -338,7 +418,7 @@ async def update_trading_system(
     return {"success": True, "message": "交易计划已更新"}
 
 
-@router.delete("/{system_id}")
+@router.delete("/{system_id}", dependencies=[Depends(require_pro)])
 async def delete_trading_system(system_id: str, user: dict = Depends(get_current_user)):
     """删除交易计划"""
     db = get_mongo_db()
@@ -348,7 +428,7 @@ async def delete_trading_system(system_id: str, user: dict = Depends(get_current
     return {"success": True, "message": "交易计划已删除"}
 
 
-@router.post("/{system_id}/activate")
+@router.post("/{system_id}/activate", dependencies=[Depends(require_pro)])
 async def activate_trading_system(system_id: str, user: dict = Depends(get_current_user)):
     """设为默认交易计划（is_active）"""
     db = get_mongo_db()

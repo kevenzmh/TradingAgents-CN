@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Callable
 from bson import ObjectId
 
+from app.services.trading_system_rules import build_rules_section, rules_root
 from app.core.database import get_mongo_db, get_database
 
 # ==================== 特性开关 ====================
@@ -356,9 +357,10 @@ class TradeReviewService:
             if system:
                 logger.info(f"✅ [获取交易计划] 成功获取: {system.get('name', 'N/A')}")
                 logger.info(f"   - 风格: {system.get('style', 'N/A')}")
-                logger.info(f"   - 选股规则: {len(system.get('stock_selection', {}).get('must_have', []))} 条必须满足")
-                logger.info(f"   - 择时规则: {len(system.get('timing', {}).get('entry_signals', []))} 条入场信号")
-                logger.info(f"   - 纪律规则: {len(system.get('discipline', {}).get('must_do', []))} 条必须做到")
+                root = rules_root(system)
+                logger.info(f"   - 选股规则: {len((root.get('stock_selection') or {}).get('must_have', []))} 条必须满足")
+                logger.info(f"   - 择时规则: {len((root.get('timing') or {}).get('entry_signals', []))} 条入场信号")
+                logger.info(f"   - 纪律规则: {len((root.get('discipline') or {}).get('must_do', []))} 条必须做到")
             else:
                 logger.warning(f"⚠️ [获取交易计划] 未找到交易计划: {trading_system_id}")
 
@@ -1482,61 +1484,12 @@ class TradeReviewService:
 ### 交易计划规则
 
 """
-            # 添加选股规则
-            stock_selection = trading_system.get('stock_selection', {})
-            if stock_selection:
-                trading_system_section += "**选股规则**:\n"
-                must_meet = stock_selection.get('must_meet', [])
-                if must_meet:
-                    trading_system_section += "- 必须满足: " + "; ".join(must_meet) + "\n"
-                exclude = stock_selection.get('exclude', [])
-                if exclude:
-                    trading_system_section += "- 排除条件: " + "; ".join(exclude) + "\n"
-                trading_system_section += "\n"
-
-            # 添加择时规则
-            timing = trading_system.get('timing', {})
-            if timing:
-                trading_system_section += "**择时规则**:\n"
-                entry_signals = timing.get('entry_signals', [])
-                if entry_signals:
-                    trading_system_section += "- 入场信号: " + "; ".join(entry_signals) + "\n"
-                exit_signals = timing.get('exit_signals', [])
-                if exit_signals:
-                    trading_system_section += "- 出场信号: " + "; ".join(exit_signals) + "\n"
-                trading_system_section += "\n"
-
-            # 添加仓位规则
-            position = trading_system.get('position', {})
-            if position:
-                trading_system_section += "**仓位规则**:\n"
-                trading_system_section += f"- 单只股票上限: {position.get('single_stock_limit', 'N/A')}%\n"
-                trading_system_section += f"- 最大持股数: {position.get('max_stocks', 'N/A')}只\n"
-                trading_system_section += "\n"
-
-            # 添加风险管理规则
-            risk_management = trading_system.get('risk_management', {})
-            if risk_management:
-                trading_system_section += "**风险管理规则**:\n"
-                stop_loss = risk_management.get('stop_loss', {})
-                if stop_loss:
-                    trading_system_section += f"- 止损: {stop_loss.get('type', 'N/A')} {stop_loss.get('value', 'N/A')}\n"
-                take_profit = risk_management.get('take_profit', {})
-                if take_profit:
-                    trading_system_section += f"- 止盈: {take_profit.get('type', 'N/A')} {take_profit.get('value', 'N/A')}\n"
-                trading_system_section += "\n"
-
-            # 添加纪律规则
-            discipline = trading_system.get('discipline', {})
-            if discipline:
-                trading_system_section += "**纪律规则**:\n"
-                must_do = discipline.get('must_do', [])
-                if must_do:
-                    trading_system_section += "- 必须做到: " + "; ".join(must_do) + "\n"
-                forbidden = discipline.get('forbidden', [])
-                if forbidden:
-                    trading_system_section += "- 严禁操作: " + "; ".join(forbidden) + "\n"
-                trading_system_section += "\n"
+            # 规则文本由 trading_system_rules 生成（兼容 data 嵌套/顶层、字典/字符串条目）
+            rules_text = build_rules_section(trading_system)
+            if rules_text:
+                trading_system_section += rules_text + "\n"
+            else:
+                trading_system_section += "（该交易计划尚未填写具体规则）\n\n"
 
             trading_system_section += "**请在复盘分析中，重点检查本次交易是否符合以上交易计划规则，指出违反规则的地方。**\n"
 

@@ -7,7 +7,21 @@
 import type { RouteRecordRaw } from 'vue-router'
 
 export const proWorkflowRoutes: RouteRecordRaw[] = []
-export const proTradingSystemRoutes: RouteRecordRaw[] = []
+export const proTradingSystemRoutes: RouteRecordRaw[] = [
+  {
+    path: '/trading-system',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'TradingSystems',
+        component: () => import('@/views/TradingSystem/index.vue'),
+        meta: { title: '交易计划', requiresAuth: true }
+      }
+    ]
+  }
+]
 export const proAnalysisChildren: RouteRecordRaw[] = []
 export const proSettingsChildren: RouteRecordRaw[] = [
   {

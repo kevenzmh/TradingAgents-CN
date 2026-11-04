@@ -22,8 +22,10 @@ export interface ProMenuGroup {
 /** 顶级菜单中的 Pro 项（社区版：空） */
 export const proTopLevelItems: ProMenuItem[] = []
 
-/** 顶级菜单中的 Pro 项·交易计划（社区版：空） */
-export const proTradingSystemMenuItems: ProMenuItem[] = []
+/** 顶级菜单中的 Pro 项·交易计划 */
+export const proTradingSystemMenuItems: ProMenuItem[] = [
+  { path: '/trading-system', label: '交易计划' }
+]
 
 /** 分析流子菜单（社区版重建：管理/编辑器已恢复） */
 export const proWorkflowMenu: ProMenuGroup = {
