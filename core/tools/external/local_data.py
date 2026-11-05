@@ -100,15 +100,16 @@ def get_stock_daily_quotes(
         日线列表，按 trade_date 升序
     """
     symbol = str(symbol).strip().zfill(6)
-    start = start_date.replace("-", "")[:8]
-    end = end_date.replace("-", "")[:8]
     db = _get_db()
     col = db[_COL_DAILY]
     query = {
         "symbol": symbol,
-        "trade_date": {"$gte": start, "$lte": end},
         "period": period,
     }
+    # trade_date 两种存储形态并存，区间条件必须同时覆盖
+    from tradingagents.utils.trade_date import date_range_filter
+
+    query.update(date_range_filter(start_date, end_date))
     if source:
         query["data_source"] = source
     else:
@@ -336,15 +337,13 @@ def get_etf_daily_quotes(
         日线列表，按 trade_date 升序；含 close、pct_chg、volume、amount、unit_nav、accum_nav
     """
     symbol = str(symbol).strip().zfill(6)
-    start = start_date.replace("-", "")[:8]
-    end = end_date.replace("-", "")[:8]
     db = _get_db()
     col = db[_COL_ETF_DAILY]
+    from tradingagents.utils.trade_date import date_range_filter
+
+    query = {"code": symbol, **date_range_filter(start_date, end_date)}
     cursor = (
-        col.find(
-            {"code": symbol, "trade_date": {"$gte": start, "$lte": end}},
-            {"_id": 0},
-        )
+        col.find(query, {"_id": 0})
         .sort("trade_date", 1)
         .limit(limit)
     )

@@ -237,13 +237,12 @@ class MongoDBCacheAdapter:
             }
             if not is_fund:
                 query["period"] = period
-            if start_date:
-                query["trade_date"] = {"$gte": start_date}
-            if end_date:
-                if "trade_date" in query:
-                    query["trade_date"]["$lte"] = end_date
-                else:
-                    query["trade_date"] = {"$lte": end_date}
+
+            # trade_date 在库里同时存在 YYYY-MM-DD 与 YYYYMMDD 两种形态，
+            # 只按一种构造区间会让另一批记录整体不可见。
+            from tradingagents.utils.trade_date import date_range_filter
+
+            query.update(date_range_filter(start_date, end_date))
 
             cursor = collection.find(query, {"_id": 0}).sort("trade_date", 1)
             data = list(cursor)

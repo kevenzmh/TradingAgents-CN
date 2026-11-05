@@ -72,6 +72,101 @@ def _normalize_statement_list(section_data: Any) -> List[Dict[str, Any]]:
     return []
 
 
+# akshare 三大报表（stock_*_sheet_by_report_em）以大写英文列名返回，
+# 与本模块的规范字段名不同；不映射的话报表数据落库后无人能读。
+_AKSHARE_STATEMENT_FIELDS: Dict[str, str] = {
+    # 利润表
+    "TOTAL_OPERATE_INCOME": "oper_rev",
+    "OPERATE_INCOME": "oper_rev",
+    "OPERATE_COST": "oper_cost",
+    "TOTAL_OPERATE_COST": "oper_cost",
+    "SALE_EXPENSE": "oper_exp",
+    "MANAGE_EXPENSE": "admin_exp",
+    "RESEARCH_EXPENSE": "rd_exp",
+    "ME_RESEARCH_EXPENSE": "rd_exp",
+    "FINANCE_EXPENSE": "fin_exp",
+    "OPERATE_PROFIT": "oper_profit",
+    "TOTAL_PROFIT": "total_profit",
+    "NETPROFIT": "net_income",
+    "PARENT_NETPROFIT": "net_profit",
+    "DEDUCT_PARENT_NETPROFIT": "net_profit_deducted",
+    # 资产负债表
+    "TOTAL_ASSETS": "total_assets",
+    "TOTAL_LIABILITIES": "total_liab",
+    "TOTAL_EQUITY": "total_equity",
+    "TOTAL_PARENT_EQUITY": "total_equity",
+    "TOTAL_CURRENT_ASSETS": "total_cur_assets",
+    "TOTAL_NONCURRENT_ASSETS": "total_nca",
+    "TOTAL_CURRENT_LIAB": "total_cur_liab",
+    "TOTAL_NONCURRENT_LIAB": "total_ncl",
+    "MONETARYFUNDS": "money_cap",
+    "ACCOUNTS_RECE": "accounts_receiv",
+    "INVENTORY": "inventories",
+    "FIXED_ASSET": "fix_assets",
+    "GOODWILL": "goodwill",
+    "UNASSIGN_RPOFIT": "undistr_porfit",
+    # 现金流量表
+    "NETCASH_OPERATE": "n_cashflow_act",
+    "NETCASH_INVEST": "n_cashflow_inv_act",
+    "NETCASH_FINANCE": "n_cashflow_fin_act",
+    "FA_IR_DEPR": "depreciation",
+    "END_CCE": "c_cash_equ_end_period",
+    "BEGIN_CCE": "c_cash_equ_beg_period",
+}
+
+# 除映射后的规范字段外，只保留报表口径必需的少数原始列
+_AKSHARE_STATEMENT_KEEP_FIELDS = (
+    "REPORT_DATE",
+    "NOTICE_DATE",
+    "OPINION_TYPE",
+)
+
+
+def _normalize_statement_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """把 akshare 大写英文报表行转成规范字段名（幂等，已是规范名的行原样返回）。
+
+    akshare 的三大报表一行有 160~250 列，其中绝大多数（保险/银行专项科目、
+    同比列、附注列）在展开成「每股每期一条」后没人读；按报告期展开时原样带进
+    raw_data 会让单条记录从 0.6KB 涨到 24KB。这里只保留映射后的规范字段。
+    """
+    if "REPORT_DATE" not in entry and "NOTICE_DATE" not in entry:
+        return entry
+
+    normalized = {
+        key: entry.get(key)
+        for key in _AKSHARE_STATEMENT_KEEP_FIELDS
+        if entry.get(key) is not None
+    }
+    for source_field, target_field in _AKSHARE_STATEMENT_FIELDS.items():
+        if normalized.get(target_field) is not None:
+            continue
+        value = _safe_float(entry.get(source_field))
+        if value is not None:
+            normalized[target_field] = value
+    return normalized
+
+
+def _statement_period(entry: Dict[str, Any]) -> str:
+    """报表行的报告期：兼容本模块的 end_date 与 akshare 的 REPORT_DATE。"""
+    return _normalize_date_digits(
+        _pick_first(
+            entry.get("end_date"),
+            entry.get("report_period"),
+            entry.get("REPORT_DATE"),
+        )
+    )
+
+
+def _statement_ann_date(entry: Dict[str, Any]) -> str:
+    return _normalize_date_digits(
+        _pick_first(
+            entry.get("ann_date"),
+            entry.get("f_ann_date"),
+            entry.get("NOTICE_DATE"),
+        )
+    )
+
+
 def _statement_quality_score(record: Dict[str, Any]) -> int:
     return sum(1 for value in record.values() if value not in (None, "", [], {}))
 
@@ -96,13 +191,80 @@ def _extract_from_candidates(record: Dict[str, Any], *field_names: str) -> Optio
     return None
 
 
+def _set_if_known(record: Dict[str, Any], key: str, value: Any) -> None:
+    """只在取到有效值时写入，避免空分项把已有值抹成 None。"""
+    if value is not None:
+        record[key] = value
+
+
+_AKSHARE_INDICATOR_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "营业总收入": ("revenue", "oper_rev"),
+    "营业收入": ("oper_rev", "revenue"),
+    "归母净利润": ("net_profit",),
+    "净利润": ("net_income",),
+    "扣非净利润": ("net_profit_deducted",),
+    "营业成本": ("oper_cost",),
+    "营业利润": ("oper_profit", "operating_profit"),
+    "利润总额": ("total_profit",),
+    "销售费用": ("oper_exp",),
+    "管理费用": ("admin_exp",),
+    "财务费用": ("fin_exp",),
+    "研发费用": ("rd_exp",),
+    "股东权益合计(净资产)": ("total_equity",),
+    "经营现金流量净额": ("n_cashflow_act",),
+    "净资产收益率(ROE)": ("roe",),
+    "净资产收益率_平均": ("roe",),
+    "总资产报酬率(ROA)": ("roa",),
+    "毛利率": ("gross_margin",),
+    "销售净利率": ("netprofit_margin",),
+    "资产负债率": ("debt_to_assets",),
+    "权益乘数": ("assets_to_eqt",),
+    "流动比率": ("current_ratio",),
+    "速动比率": ("quick_ratio",),
+    "现金比率": ("cash_ratio",),
+}
+
+
+def _iter_akshare_matrix_periods(rows: Any) -> List[Tuple[str, Dict[str, Any]]]:
+    """把 akshare「指标 × 报告期」矩阵拆成 (报告期, 扁平字段) 列表。
+
+    akshare 的 stock_financial_abstract 以指标名为行、"20260930" 这类报告期
+    为列，跨期一次返回；不拆开就只能拿到最新一期且历史期全丢。
+    同名指标在不同「选项」分组里会重复出现，取首次出现的值。
+    """
+    if not isinstance(rows, list):
+        return []
+
+    by_period: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        fields = _AKSHARE_INDICATOR_FIELDS.get(str(row.get("指标") or "").strip())
+        if not fields:
+            continue
+        for key, value in row.items():
+            if key in ("选项", "指标"):
+                continue
+            period = _normalize_date_digits(key)
+            if len(period) != 8:
+                continue
+            numeric = _safe_float(value)
+            if numeric is None:
+                continue
+            bucket = by_period.setdefault(period, {})
+            for field in fields:
+                bucket.setdefault(field, numeric)
+
+    return sorted(by_period.items(), reverse=True)
+
+
 def _flatten_financial_period_record(period_record: Dict[str, Any]) -> Dict[str, Any]:
     income = dict(period_record.get("income_statement") or {})
     balance = dict(period_record.get("balance_sheet") or {})
     cashflow = dict(period_record.get("cashflow_statement") or {})
     indicators = dict(period_record.get("financial_indicators") or {})
 
-    period_record.update({
+    _flattened = {
         "revenue": _extract_from_candidates(income, "revenue", "oper_rev"),
         "oper_rev": _extract_from_candidates(income, "oper_rev", "revenue"),
         "net_income": _extract_from_candidates(income, "n_income", "net_income"),
@@ -130,6 +292,7 @@ def _flatten_financial_period_record(period_record: Dict[str, Any]) -> Dict[str,
         "n_cashflow_act": _extract_from_candidates(cashflow, "n_cashflow_act"),
         "n_cashflow_inv_act": _extract_from_candidates(cashflow, "n_cashflow_inv_act"),
         "n_cashflow_fin_act": _extract_from_candidates(cashflow, "n_cashflow_fin_act"),
+        "depreciation": _extract_from_candidates(cashflow, "depreciation", "fa_ir_depr"),
         "c_cash_equ_end_period": _extract_from_candidates(cashflow, "c_cash_equ_end_period", "end_bal_cash"),
         "c_cash_equ_beg_period": _extract_from_candidates(cashflow, "c_cash_equ_beg_period", "beg_bal_cash"),
         "roe": _extract_from_candidates(indicators, "roe", "roe_avg", "roe_waa"),
@@ -141,7 +304,10 @@ def _flatten_financial_period_record(period_record: Dict[str, Any]) -> Dict[str,
         "current_ratio": _extract_from_candidates(indicators, "current_ratio"),
         "quick_ratio": _extract_from_candidates(indicators, "quick_ratio"),
         "cash_ratio": _extract_from_candidates(indicators, "cash_ratio"),
-    })
+    }
+
+    for key, value in _flattened.items():
+        _set_if_known(period_record, key, value)
 
     period_record["raw_data"] = {
         "income_statement": income,
@@ -222,37 +388,51 @@ def expand_financial_document_to_periods(document: Optional[Dict[str, Any]]) -> 
 
     raw_data = document.get("raw_data") or {}
     grouped: Dict[str, Dict[str, Any]] = {}
+    # akshare provider 把现金流量表放在 cash_flow 键下，历史文档也有用
+    # cashflow_statement 的，两种都要认，统一归到 cashflow_statement。
+    section_aliases = {"cash_flow": "cashflow_statement"}
     section_names = [
         "income_statement",
         "balance_sheet",
         "cashflow_statement",
+        "cash_flow",
         "financial_indicators",
         "main_business",
     ]
 
+    def _new_period_entry(period: str) -> Dict[str, Any]:
+        return {
+            "symbol": document.get("symbol") or document.get("code"),
+            "code": document.get("code") or document.get("symbol"),
+            "name": document.get("name"),
+            "data_source": document.get("data_source") or document.get("source"),
+            "source": document.get("data_source") or document.get("source"),
+            "report_period": period,
+            "report_date": period,
+            "report_type": _determine_report_type(period),
+            "ann_date": "",
+            "updated_at": document.get("updated_at"),
+        }
+
     for section_name in section_names:
-        for entry in _normalize_statement_list(raw_data.get(section_name)):
-            period = _normalize_date_digits(
-                _pick_first(entry.get("end_date"), entry.get("report_period"), document.get("report_period"), document.get("report_date"))
+        for raw_entry in _normalize_statement_list(raw_data.get(section_name)):
+            entry = _normalize_statement_entry(raw_entry)
+            period = _statement_period(entry) or _normalize_date_digits(
+                _pick_first(document.get("report_period"), document.get("report_date"))
             )
             if not period:
                 continue
-            period_entry = grouped.setdefault(period, {
-                "symbol": document.get("symbol") or document.get("code"),
-                "code": document.get("code") or document.get("symbol"),
-                "name": document.get("name"),
-                "data_source": document.get("data_source") or document.get("source"),
-                "source": document.get("data_source") or document.get("source"),
-                "report_period": period,
-                "report_date": period,
-                "report_type": _determine_report_type(period),
-                "ann_date": _normalize_date_digits(_pick_first(entry.get("ann_date"), entry.get("f_ann_date"), document.get("ann_date"))),
-                "updated_at": document.get("updated_at"),
-            })
-            period_entry[section_name] = _prefer_statement(period_entry.get(section_name), entry)
-            ann_date = _normalize_date_digits(_pick_first(entry.get("ann_date"), entry.get("f_ann_date"), document.get("ann_date")))
+            period_entry = grouped.setdefault(period, _new_period_entry(period))
+            target_section = section_aliases.get(section_name, section_name)
+            period_entry[target_section] = _prefer_statement(period_entry.get(target_section), entry)
+            ann_date = _statement_ann_date(entry) or _normalize_date_digits(document.get("ann_date"))
             if ann_date and ann_date > str(period_entry.get("ann_date") or ""):
                 period_entry["ann_date"] = ann_date
+
+    for matrix_period, matrix_fields in _iter_akshare_matrix_periods(raw_data.get("main_indicators")):
+        matrix_entry = grouped.setdefault(matrix_period, _new_period_entry(matrix_period))
+        for field_name, value in matrix_fields.items():
+            _set_if_known(matrix_entry, field_name, value)
 
     latest_period = _normalize_date_digits(_pick_first(document.get("report_period"), document.get("report_date")))
     if latest_period:
@@ -425,22 +605,14 @@ def get_stock_daily_quotes(
             其他字段以数据库 stock_daily_quotes 集合存储为准
     """
     symbol = str(symbol).strip().zfill(6)
-    start = start_date.replace("-", "")[:8]
-    end = end_date.replace("-", "")[:8]
-    start_dash = f"{start[:4]}-{start[4:6]}-{start[6:8]}" if len(start) == 8 else start_date
-    end_dash = f"{end[:4]}-{end[4:6]}-{end[6:8]}" if len(end) == 8 else end_date
     db = _get_db()
     col = db[_COL_DAILY]
-    date_filter = {
-        "$or": [
-            {"trade_date": {"$gte": start, "$lte": end}},
-            {"trade_date": {"$gte": start_dash, "$lte": end_dash}},
-        ]
-    }
+    from tradingagents.utils.trade_date import date_range_filter
+
     query = {
         "symbol": symbol,
         "period": period,
-        **date_filter,
+        **date_range_filter(start_date, end_date),
     }
     if source:
         query["data_source"] = source

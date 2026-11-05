@@ -44,6 +44,187 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _parse_china_month(value: Any) -> Optional[str]:
+    """akshare 的 "2026年09月份" -> "2026-09"；已是标准月度的原样返回。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) < 6:
+        return None
+    return f"{digits[:4]}-{digits[4:6]}"
+
+
+def _parse_china_quarter(value: Any) -> Optional[str]:
+    """akshare 的 "2026年第1-3季度" / "2026年第2季度" -> 期末月份，如 "2026-09"。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    year = "".join(ch for ch in text.split("年")[0] if ch.isdigit())
+    if len(year) != 4:
+        return None
+    tail = text.split("年")[-1]
+    quarter_digits = [ch for ch in tail if ch.isdigit()]
+    if not quarter_digits:
+        return None
+    quarter = int(quarter_digits[-1])
+    if quarter < 1 or quarter > 4:
+        return None
+    return f"{year}-{quarter * 3:02d}"
+
+
+def _latest_row(
+    frame: Any,
+    period_parser,
+    value_fields: tuple,
+) -> Optional[Dict[str, Any]]:
+    """取报告期最新且已发布的一行。
+
+    akshare 宏观接口的排序不统一（CPI/PMI/GDP 是最新在前，PPI/LPR/社融是最旧
+    在前），不能按首行/末行取；另外未发布月份的行只有"前值"、没有"今值"，
+    必须跳过，否则会把上一期当成当期。
+    """
+    if frame is None or getattr(frame, "empty", True):
+        return None
+
+    best_key = None
+    best_row = None
+    for _, raw in frame.iterrows():
+        row = dict(raw)
+        if all(_safe_float(row.get(field)) is None for field in value_fields):
+            continue
+        key = period_parser(row)
+        if not key:
+            continue
+        if best_key is None or key > best_key:
+            best_key = key
+            best_row = row
+    return best_row
+
+
+def _fetch_macro_indicators() -> Dict[str, Any]:
+    """通过 AKShare 拉取中国宏观指标（免费接口，不依赖 Tushare 积分）。
+
+    只取每个指标的最新一期；接口按时间倒序返回，首行即最新。任一接口失败
+    不影响其余指标，失败项以 status 标注原因而不是整体报错。
+    """
+    indicators: Dict[str, Any] = {}
+    try:
+        import akshare as ak
+    except Exception as exc:  # pragma: no cover - 依赖缺失时明确告知
+        return {"status": "unavailable", "message": f"akshare 不可用: {exc}"}
+
+    def _record(key: str, label: str, unit: str, fetcher, extractor, period_parser, value_fields) -> None:
+        try:
+            row = _latest_row(fetcher(), period_parser, value_fields)
+            if not row:
+                indicators[key] = {"label": label, "status": "no_data", "unit": unit}
+                return
+            value = extractor(row)
+            if value is None:
+                indicators[key] = {"label": label, "status": "no_data", "unit": unit}
+                return
+            indicators[key] = {"label": label, "status": "ok", "unit": unit, **value}
+        except Exception as exc:
+            logger.warning("宏观指标 %s 获取失败: %s", key, exc)
+            indicators[key] = {"label": label, "status": "error", "unit": unit, "message": str(exc)[:200]}
+
+    def _month_row(row: Dict[str, Any]) -> str:
+        return _parse_china_month(row.get("月份")) or ""
+
+    def _report_date_row(row: Dict[str, Any]) -> str:
+        return str(row.get("日期") or "")[:10]
+
+    def _trade_date_row(row: Dict[str, Any]) -> str:
+        return str(row.get("TRADE_DATE") or "")[:10]
+
+    _record(
+        "cpi", "居民消费价格指数 (CPI)", "%",
+        lambda: ak.macro_china_cpi(),
+        lambda row: {
+            "period": _parse_china_month(row.get("月份")),
+            "yoy": _safe_float(row.get("全国-同比增长")),
+            "mom": _safe_float(row.get("全国-环比增长")),
+        },
+        _month_row,
+        ("全国-同比增长", "全国-环比增长"),
+    )
+    _record(
+        "ppi", "工业生产者出厂价格指数 (PPI)", "%",
+        lambda: ak.macro_china_ppi_yearly(),
+        lambda row: {
+            "period": _report_date_row(row),
+            "yoy": _safe_float(row.get("今值")),
+            "previous": _safe_float(row.get("前值")),
+        },
+        _report_date_row,
+        ("今值",),
+    )
+    _record(
+        "pmi", "制造业采购经理人指数 (PMI)", "点",
+        lambda: ak.macro_china_pmi(),
+        lambda row: {
+            "period": _parse_china_month(row.get("月份")),
+            "manufacturing": _safe_float(row.get("制造业-指数")),
+            "non_manufacturing": _safe_float(row.get("非制造业-指数")),
+        },
+        _month_row,
+        ("制造业-指数",),
+    )
+    _record(
+        "gdp", "国内生产总值 (GDP)", "%",
+        lambda: ak.macro_china_gdp(),
+        lambda row: {
+            "period": _parse_china_quarter(row.get("季度")),
+            "yoy": _safe_float(row.get("国内生产总值-同比增长")),
+            "absolute_yi": _safe_float(row.get("国内生产总值-绝对值")),
+        },
+        lambda row: _parse_china_quarter(row.get("季度")) or "",
+        ("国内生产总值-同比增长",),
+    )
+    _record(
+        "money_supply", "货币供应量 (M1/M2)", "%",
+        lambda: ak.macro_china_money_supply(),
+        lambda row: {
+            "period": _parse_china_month(row.get("月份")),
+            "m2_yoy": _safe_float(row.get("货币和准货币(M2)-同比增长")),
+            "m1_yoy": _safe_float(row.get("货币(M1)-同比增长")),
+            "m0_yoy": _safe_float(row.get("流通中的现金(M0)-同比增长")),
+        },
+        _month_row,
+        ("货币和准货币(M2)-同比增长", "货币(M1)-同比增长"),
+    )
+    _record(
+        "interest_rates", "贷款市场报价利率 (LPR)", "%",
+        lambda: ak.macro_china_lpr(),
+        lambda row: {
+            "period": _trade_date_row(row),
+            "lpr_1y": _safe_float(row.get("LPR1Y")),
+            "lpr_5y": _safe_float(row.get("LPR5Y")),
+        },
+        _trade_date_row,
+        ("LPR1Y", "LPR5Y"),
+    )
+    _record(
+        "social_financing", "社会融资规模增量", "亿元",
+        lambda: ak.macro_china_shrzgm(),
+        lambda row: {
+            "period": _parse_china_month(row.get("月份")),
+            "total_yi": _safe_float(row.get("社会融资规模增量")),
+        },
+        _month_row,
+        ("社会融资规模增量",),
+    )
+
+    available = [k for k, v in indicators.items() if v.get("status") == "ok"]
+    return {
+        "status": "ok" if available else "no_data",
+        "source": "akshare",
+        "available_indicators": available,
+        "indicators": indicators,
+    }
+
+
 def _get_market_pe_pb_distribution() -> Dict[str, Any]:
     """从 stock_basic_info 统计全市场 PE/PB 分布。"""
     db = _get_db()
@@ -113,7 +294,7 @@ def _get_market_pe_pb_distribution() -> Dict[str, Any]:
         "和市场宽度统计。宏观指标需从外部来源补充。"
     ),
     category="fundamentals",
-    is_online=False,
+    is_online=True,
     auto_register=True,
     timeout_tier="light",
     capability_tags=["macro", "market_overview"],
@@ -121,16 +302,16 @@ def _get_market_pe_pb_distribution() -> Dict[str, Any]:
     output_shape="structured_json",
     preferred_for=["市场整体估值概览", "宏观数据框架查询"],
     when_to_use=(
-        "当需要快速了解全市场估值水平、PE/PB 分布、市场整体宽度时使用。"
-        "此工具可提供从本地数据库能拿到的市场统计，以及需要外部填充的宏观指标清单。"
+        "当需要快速了解全市场估值水平、PE/PB 分布，或查询 CPI/PPI/PMI/GDP/"
+        "M1M2/LPR/社融的最新一期数值时使用。"
     ),
     when_not_to_use=(
         "不适合查询具体股票的基本面或财务数据；"
-        "不适合获取实时 CPI/GDP/PMI 实际数值（这些需要外部数据源补充）。"
+        "不适合需要长历史宏观时间序列的回归/相关性分析（本工具只返回最新一期）。"
     ),
     returns=(
         "返回 JSON 字符串，包含 market_overview（全市场估值统计）、"
-        "indicator_slots（宏观指标占位，状态为 pending_external_data）、"
+        "macro_indicators（AKShare 实时宏观指标，每项含 status/period 及数值）、"
         "market_breadth（市场宽度，含数据来源说明）。"
     ),
     example="get_macro_dashboard()",
@@ -139,7 +320,7 @@ def _get_market_pe_pb_distribution() -> Dict[str, Any]:
 def get_macro_dashboard() -> str:
     """获取市场宏观概览仪表盘。
 
-    返回全市场 PE/PB 统计数据，以及需要外部数据源补充的宏观指标框架。
+    返回全市场 PE/PB 统计数据，以及 AKShare 实时拉取的宏观指标最新一期。
 
     Returns:
         str: JSON 字符串，字段说明——
@@ -150,12 +331,17 @@ def get_macro_dashboard() -> str:
                 — pe_ttm_distribution: dict PE_TTM分布（avg/median/min/max/valid_samples）
                 — pb_distribution: dict PB分布（avg/median/min/max/valid_samples）
                 — industry_coverage: dict 行业覆盖（total_industries）
-            indicator_slots: dict 宏观指标占位，每个指标结构——
-                — label: 指标名称
-                — status: 状态（固定为 "pending_external_data"）
-                — suggested_source: 建议数据源
-                — note: 说明
-                包含 key: cpi / gdp / pmi / interest_rates
+            macro_indicators: dict AKShare 宏观指标——
+                — status: ok | no_data | unavailable
+                — source: 数据来源（akshare）
+                — available_indicators: list[str] 取到数值的指标 key
+                — indicators: dict 每个指标结构 ——
+                    label（名称）、status（ok/no_data/error）、unit（单位）、
+                    period（报告期）、以及指标自身字段；
+                    cpi 含 yoy/mom，pmi 含 manufacturing/non_manufacturing，
+                    gdp 含 yoy/absolute_yi，money_supply 含 m1_yoy/m2_yoy，
+                    interest_rates 含 lpr_1y/lpr_5y，social_financing 含 total_yi
+                    包含 key: cpi / ppi / pmi / gdp / money_supply / interest_rates / social_financing
             market_breadth: dict 市场宽度——
                 — status: 状态（固定为 "partial_data"）
                 — note: 说明
@@ -167,13 +353,14 @@ def get_macro_dashboard() -> str:
     try:
         today = datetime.date.today()
         market_stats = _get_market_pe_pb_distribution()
+        macro = _fetch_macro_indicators()
 
         dashboard = {
             "dashboard_date": today.isoformat(),
             "data_source_note": (
-                "以下 market_overview 来自本地数据库 stock_basic_info 集合的统计快照，"
-                "反映系统已同步的 A 股全市场 PE/PB 分布。"
-                "indicator_slots 中的宏观指标需要从外部数据源（如东方财富、国家统计局 API）获取。"
+                "market_overview 来自本地数据库 stock_basic_info 集合的统计快照，"
+                "反映系统已同步的 A 股全市场 PE/PB 分布；macro_indicators 由 AKShare "
+                "免费宏观接口实时拉取（每个指标标注各自的报告期与状态）。"
             ),
             "market_overview": {
                 "total_stocks_tracked": market_stats["total_tracked"],
@@ -195,32 +382,7 @@ def get_macro_dashboard() -> str:
                     "total_industries": market_stats["industry_count"],
                 },
             },
-            "indicator_slots": {
-                "cpi": {
-                    "label": "居民消费价格指数 (CPI)",
-                    "status": "pending_external_data",
-                    "suggested_source": "国家统计局 / 东方财富宏观经济数据",
-                    "note": "需外部 API 补充月度 CPI 同比/环比数据",
-                },
-                "gdp": {
-                    "label": "国内生产总值 (GDP)",
-                    "status": "pending_external_data",
-                    "suggested_source": "国家统计局 / 东方财富宏观经济数据",
-                    "note": "需外部 API 补充季度 GDP 同比/累计增速",
-                },
-                "pmi": {
-                    "label": "采购经理人指数 (PMI)",
-                    "status": "pending_external_data",
-                    "suggested_source": "国家统计局 / 东方财富宏观经济数据",
-                    "note": "需外部 API 补充制造业/非制造业 PMI",
-                },
-                "interest_rates": {
-                    "label": "利率 (LPR/MLF/国债收益率)",
-                    "status": "pending_external_data",
-                    "suggested_source": "中国人民银行 / 中国货币网 / 东方财富",
-                    "note": "需外部 API 补充 LPR、MLF 利率及国债收益率曲线",
-                },
-            },
+            "macro_indicators": macro,
             "market_breadth": {
                 "status": "partial_data",
                 "note": (

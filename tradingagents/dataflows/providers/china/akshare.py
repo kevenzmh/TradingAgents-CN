@@ -1927,8 +1927,11 @@ class AKShareProvider(BaseStockDataProvider):
 
             # 2. 获取资产负债表
             try:
+                # 三大报表接口按公司类型分流，裸 6 位代码会取不到 company_type 而直接抛错
+                statement_symbol = self._get_akshare_cn_symbol(code)
+
                 def fetch_balance_sheet():
-                    return self.ak.stock_balance_sheet_by_report_em(symbol=code)
+                    return self.ak.stock_balance_sheet_by_report_em(symbol=statement_symbol)
 
                 balance_sheet = await asyncio.to_thread(fetch_balance_sheet)
                 if balance_sheet is not None and not balance_sheet.empty:
@@ -1940,7 +1943,7 @@ class AKShareProvider(BaseStockDataProvider):
             # 3. 获取利润表
             try:
                 def fetch_income_statement():
-                    return self.ak.stock_profit_sheet_by_report_em(symbol=code)
+                    return self.ak.stock_profit_sheet_by_report_em(symbol=statement_symbol)
 
                 income_statement = await asyncio.to_thread(fetch_income_statement)
                 if income_statement is not None and not income_statement.empty:
@@ -1952,7 +1955,7 @@ class AKShareProvider(BaseStockDataProvider):
             # 4. 获取现金流量表
             try:
                 def fetch_cash_flow():
-                    return self.ak.stock_cash_flow_sheet_by_report_em(symbol=code)
+                    return self.ak.stock_cash_flow_sheet_by_report_em(symbol=statement_symbol)
 
                 cash_flow = await asyncio.to_thread(fetch_cash_flow)
                 if cash_flow is not None and not cash_flow.empty:
