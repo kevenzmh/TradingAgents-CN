@@ -175,6 +175,7 @@ class DataSourceType(str, Enum):
     WIND = "wind"
     CHOICE = "choice"
     QMT = "qmt"
+    TDX = "tdx"  # 通达信本地行情文件（需安装通达信客户端并下载日线）
 
     # 其他数据源
     QUANDL = "quandl"

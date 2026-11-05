@@ -1906,6 +1906,56 @@ class ConfigService:
                         else:
                             os.environ[env_key] = env_value
 
+            elif ds_type == "tdx":
+                # 通达信本地文件：直接校验目录结构与日线文件
+                data_dir = str((ds_config.config_params or {}).get("data_dir") or "").strip()
+                if not data_dir:
+                    return {
+                        "success": False,
+                        "message": "未填写通达信安装目录",
+                        "response_time": time.time() - start_time,
+                        "details": {"type": ds_type},
+                    }
+
+                original_env = os.getenv("TDX_DATA_DIR")
+                os.environ["TDX_DATA_DIR"] = data_dir
+                try:
+                    from app.services.data_sources.tdx_adapter import TDXAdapter
+
+                    adapter = TDXAdapter()
+                    if not adapter.is_available():
+                        return {
+                            "success": False,
+                            "message": f"目录下未找到 vipdoc/*/lday，请确认指向通达信安装根目录: {data_dir}",
+                            "response_time": time.time() - start_time,
+                            "details": {"type": ds_type, "data_dir": data_dir},
+                        }
+                    listing = adapter.get_stock_list()
+                    latest = adapter.find_latest_trade_date()
+                    return {
+                        "success": True,
+                        "message": f"通达信数据可用：{0 if listing is None else len(listing)} 只股票，最新交易日 {latest or '未知'}",
+                        "response_time": time.time() - start_time,
+                        "details": {
+                            "type": ds_type,
+                            "data_dir": data_dir,
+                            "stock_count": 0 if listing is None else len(listing),
+                            "latest_trade_date": latest,
+                        },
+                    }
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "message": f"通达信数据测试失败: {str(e)[:200]}",
+                        "response_time": time.time() - start_time,
+                        "details": {"type": ds_type},
+                    }
+                finally:
+                    if original_env is None:
+                        os.environ.pop("TDX_DATA_DIR", None)
+                    else:
+                        os.environ["TDX_DATA_DIR"] = original_env
+
             elif ds_type == "local":
                 # 本地数据源 - 直接连接数据库检查是否有本地数据
                 try:

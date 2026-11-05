@@ -37,6 +37,7 @@ class ChinaDataSource(Enum):
     TUSHARE = DataSourceCode.TUSHARE
     AKSHARE = DataSourceCode.AKSHARE
     BAOSTOCK = DataSourceCode.BAOSTOCK
+    TDX = DataSourceCode.TDX  # 通达信本地 vipdoc 文件（离线、无额度）
 
 
 class USDataSource(Enum):
@@ -159,6 +160,7 @@ class DataSourceManager:
                     DataSourceCode.TUSHARE: ChinaDataSource.TUSHARE,
                     DataSourceCode.AKSHARE: ChinaDataSource.AKSHARE,
                     DataSourceCode.BAOSTOCK: ChinaDataSource.BAOSTOCK,
+                    DataSourceCode.TDX: ChinaDataSource.TDX,
                 }
 
                 result = []
@@ -202,12 +204,13 @@ class DataSourceManager:
             logger.warning(f"⚠️ [数据源优先级] 从数据库读取失败: {e}，使用默认顺序")
 
         # 🔥 回退到默认顺序（兼容性）
-        # 默认顺序：LOCAL > AKShare > Tushare > BaoStock
+        # 默认顺序：LOCAL > AKShare > Tushare > BaoStock > TDX
         default_order = [
             ChinaDataSource.LOCAL,
             ChinaDataSource.AKSHARE,
             ChinaDataSource.TUSHARE,
             ChinaDataSource.BAOSTOCK,
+            ChinaDataSource.TDX,
         ]
         # 只返回可用的数据源
         return [s for s in default_order if s in self.available_sources]
@@ -259,6 +262,7 @@ class DataSourceManager:
             DataSourceCode.TUSHARE: ChinaDataSource.TUSHARE,
             DataSourceCode.AKSHARE: ChinaDataSource.AKSHARE,
             DataSourceCode.BAOSTOCK: ChinaDataSource.BAOSTOCK,
+            DataSourceCode.TDX: ChinaDataSource.TDX,
         }
 
         return source_mapping.get(env_source, ChinaDataSource.AKSHARE)
@@ -565,8 +569,25 @@ class DataSourceManager:
         else:
             logger.info("ℹ️ BaoStock数据源已在数据库中禁用")
 
-        # TDX (通达信) 已移除
-        # 不再检查和支持 TDX 数据源
+        # 检查TDX（通达信本地 vipdoc 文件，离线、无额度）
+        # 允许两种启用方式：数据库里配了 tdx，或 .env 里直接给了 TDX_DATA_DIR。
+        # 后者不需要先在界面加配置，新装通达信填个目录即可用。
+        tdx_enabled = DataSourceCode.TDX in enabled_sources_in_db or bool(
+            str(os.getenv('TDX_DATA_DIR') or '').strip()
+        )
+        if tdx_enabled:
+            try:
+                from app.services.data_sources.tdx_adapter import get_tdx_adapter
+
+                if get_tdx_adapter().is_available():
+                    available.append(ChinaDataSource.TDX)
+                    logger.info("✅ TDX数据源可用且已启用")
+                else:
+                    logger.warning("⚠️ TDX数据源不可用: 未找到有效 vipdoc 目录（检查 TDX_DATA_DIR）")
+            except Exception as e:
+                logger.warning(f"⚠️ TDX数据源不可用: {e}")
+        else:
+            logger.info("ℹ️ TDX数据源已在数据库中禁用")
 
         return available
 
@@ -623,7 +644,8 @@ class DataSourceManager:
             return self._get_akshare_adapter()
         elif self.current_source == ChinaDataSource.BAOSTOCK:
             return self._get_baostock_adapter()
-        # TDX 已移除
+        elif self.current_source == ChinaDataSource.TDX:
+            return self._get_tdx_adapter()
         else:
             raise ValueError(f"不支持的数据源: {self.current_source}")
 
@@ -663,11 +685,14 @@ class DataSourceManager:
             logger.error(f"❌ BaoStock适配器导入失败: {e}")
             return None
 
-    # TDX 适配器已移除
-    # def _get_tdx_adapter(self):
-    #     """获取TDX适配器 (已移除)"""
-    #     logger.error(f"❌ TDX数据源已不再支持")
-    #     return None
+    def _get_tdx_adapter(self):
+        """获取TDX提供器（通达信本地 vipdoc 文件）"""
+        try:
+            from .providers.china.tdx import get_tdx_provider
+            return get_tdx_provider()
+        except ImportError as e:
+            logger.error(f"❌ TDX提供器导入失败: {e}")
+            return None
 
     def _get_cached_data(self, symbol: str, start_date: str = None, end_date: str = None, max_age_hours: int = 24) -> Optional[pd.DataFrame]:
         """
@@ -1185,6 +1210,22 @@ class DataSourceManager:
                 from .providers.china.baostock import get_baostock_provider
                 provider = get_baostock_provider()
                 df = provider.get_stock_data(symbol, start_date, end_date)
+            elif self.current_source == ChinaDataSource.TDX:
+                import asyncio
+
+                from .providers.china.tdx import get_tdx_provider
+                provider = get_tdx_provider()
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_closed():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                df = loop.run_until_complete(
+                    provider.get_historical_data(symbol, start_date, end_date, period)
+                )
 
             if df is not None and not df.empty:
                 logger.info(f"✅ [DataFrame接口] 从 {self.current_source.value} 获取成功: {len(df)}条")
@@ -1212,6 +1253,22 @@ class DataSourceManager:
                         from .providers.china.baostock import get_baostock_provider
                         provider = get_baostock_provider()
                         df = provider.get_stock_data(symbol, start_date, end_date)
+                    elif source == ChinaDataSource.TDX:
+                        import asyncio
+
+                        from .providers.china.tdx import get_tdx_provider
+                        provider = get_tdx_provider()
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_closed():
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                        df = loop.run_until_complete(
+                            provider.get_historical_data(symbol, start_date, end_date, period)
+                        )
 
                     if df is not None and not df.empty:
                         logger.info(f"✅ [DataFrame接口] 降级到 {source.value} 成功: {len(df)}条")
@@ -1322,7 +1379,9 @@ class DataSourceManager:
             elif self.current_source == ChinaDataSource.BAOSTOCK:
                 result = self._get_baostock_data(symbol, start_date, end_date, period)
                 actual_source = "baostock"
-            # TDX 已移除
+            elif self.current_source == ChinaDataSource.TDX:
+                result = self._get_tdx_data(symbol, start_date, end_date, period)
+                actual_source = "tdx"
             else:
                 result = f"❌ 不支持的数据源: {self.current_source.value}"
                 actual_source = None
@@ -1719,11 +1778,30 @@ class DataSourceManager:
         else:
             return f"❌ 未能获取{symbol}的股票数据"
 
-    # TDX 数据获取方法已移除
-    # def _get_tdx_data(self, symbol: str, start_date: str, end_date: str, period: str = "daily") -> str:
-    #     """使用TDX获取多周期数据 (已移除)"""
-    #     logger.error(f"❌ TDX数据源已不再支持")
-    #     return f"❌ TDX数据源已不再支持"
+    def _get_tdx_data(self, symbol: str, start_date: str, end_date: str, period: str = "daily") -> str:
+        """使用通达信本地 vipdoc 文件获取多周期数据 - 包含技术指标计算"""
+        import asyncio
+
+        from .providers.china.tdx import get_tdx_provider
+
+        provider = get_tdx_provider()
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        data = loop.run_until_complete(provider.get_historical_data(symbol, start_date, end_date, period))
+
+        if data is not None and not data.empty:
+            stock_info = loop.run_until_complete(provider.get_stock_basic_info(symbol))
+            stock_name = stock_info.get('name', f'股票{symbol}') if stock_info else f'股票{symbol}'
+            logger.info("✅ [TDX] 已计算技术指标: MA5/10/20/60, MACD, RSI, BOLL")
+            return self._format_stock_data_response(data, symbol, stock_name, start_date, end_date)
+        return f"❌ 未能获取{symbol}的股票数据"
 
     def _try_fallback_sources(self, symbol: str, start_date: str, end_date: str, period: str = "daily") -> tuple[str, str | None]:
         """
@@ -1750,7 +1828,8 @@ class DataSourceManager:
                         result = self._get_akshare_data(symbol, start_date, end_date, period)
                     elif source == ChinaDataSource.BAOSTOCK:
                         result = self._get_baostock_data(symbol, start_date, end_date, period)
-                    # TDX 已移除
+                    elif source == ChinaDataSource.TDX:
+                        result = self._get_tdx_data(symbol, start_date, end_date, period)
                     else:
                         logger.warning(f"⚠️ 未知数据源: {source.value}")
                         continue
@@ -1988,6 +2067,8 @@ class DataSourceManager:
                     result = self._get_akshare_stock_info(symbol)
                 elif source == ChinaDataSource.BAOSTOCK:
                     result = self._get_baostock_stock_info(symbol)
+                elif source == ChinaDataSource.TDX:
+                    result = self._get_tdx_stock_info(symbol)
                 elif source == ChinaDataSource.LOCAL:
                     # LOCAL 分支：直读 MongoDB 基础信息集合
                     try:
@@ -2131,6 +2212,34 @@ class DataSourceManager:
         except Exception as e:
             logger.error(f"❌ [股票信息] BaoStock获取失败: {e}")
             return {'symbol': symbol, 'name': f'股票{symbol}', 'source': 'baostock', 'error': str(e)}
+
+    def _get_tdx_stock_info(self, symbol: str) -> Dict:
+        """使用通达信本地名称表获取股票基本信息"""
+        try:
+            from app.services.data_sources.tdx_adapter import get_tdx_adapter
+
+            adapter = get_tdx_adapter()
+            listing = adapter.get_stock_list()
+            if listing is not None and not listing.empty:
+                code6 = str(symbol).strip().split('.')[0].zfill(6)
+                matched = listing[listing['symbol'] == code6]
+                if not matched.empty:
+                    row = matched.iloc[0]
+                    name = row.get('name')
+                    if name:
+                        return {
+                            'symbol': symbol,
+                            'name': name,
+                            'area': '未知',
+                            'industry': '未知',
+                            'market': row.get('market') or '未知',
+                            'list_date': '未知',
+                            'source': 'tdx',
+                        }
+        except Exception as e:
+            logger.error(f"❌ [股票信息] TDX获取失败: {e}")
+
+        return {'symbol': symbol, 'name': f'股票{symbol}', 'source': 'tdx'}
 
     def _parse_stock_info_string(self, info_str: str, symbol: str) -> Dict:
         """解析股票信息字符串为字典"""

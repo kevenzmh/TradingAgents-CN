@@ -89,15 +89,30 @@
       <!-- 连接配置 -->
       <el-divider content-position="left">连接配置</el-divider>
 
-      <el-form-item v-if="!isQmtType" label="API端点" prop="endpoint">
+      <el-form-item v-if="!isQmtType && !isTdxType" label="API端点" prop="endpoint">
         <el-input
           v-model="formData.endpoint"
           placeholder="请输入API端点URL"
         />
       </el-form-item>
 
+      <template v-if="isTdxType">
+        <el-divider content-position="left">通达信本地数据</el-divider>
+
+        <el-form-item label="安装目录" prop="tdx_data_dir">
+          <el-input
+            v-model="formData.tdx_data_dir"
+            placeholder="例如：C:\new_tdx"
+          />
+          <div class="form-tip">
+            填写通达信客户端安装根目录（其下应有 vipdoc/sh/lday 等子目录）。
+            数据来自客户端「盘后数据下载」，需先让通达信把日线补齐。
+          </div>
+        </el-form-item>
+      </template>
+
       <!-- API Key 输入框 -->
-      <el-form-item :label="apiKeyLabel" prop="api_key">
+      <el-form-item v-if="!isTdxType" :label="apiKeyLabel" prop="api_key">
         <el-input
           v-model="formData.api_key"
           type="password"
@@ -408,6 +423,7 @@ const marketCategories = ref<MarketCategory[]>([])
 // Computed
 const isEdit = computed(() => !!props.config)
 const isQmtType = computed(() => (formData.value.type?.toLowerCase() || '') === 'qmt')
+const isTdxType = computed(() => (formData.value.type?.toLowerCase() || '') === 'tdx')
 const apiKeyLabel = computed(() => (isQmtType.value ? 'QMT Token' : 'API Key'))
 const apiKeyPlaceholder = computed(() =>
   isQmtType.value
@@ -515,6 +531,7 @@ const defaultFormData = {
   config_params: {} as Record<string, any>,
   description: '',
   market_categories: [] as string[],
+  tdx_data_dir: '',
   qmt_data_dir: qmtDefaultConfig.data_dir,
   qmt_listen_port: qmtDefaultConfig.listen_port,
   qmt_listen_port_range: qmtDefaultConfig.listen_port_range,
@@ -565,11 +582,13 @@ const createFormDataFromConfig = (config?: any) => {
   }
   const configParams = config?.config_params || {}
   const isQmtConfig = (config?.type || '').toLowerCase() === 'qmt'
+  const isTdxConfig = (config?.type || '').toLowerCase() === 'tdx'
 
   return {
     ...base,
     endpoint: isQmtConfig ? (config?.endpoint || 'miniqmt://local') : (config?.endpoint || ''),
     config_params: isQmtConfig ? stripQmtConfigParams(configParams) : configParams,
+    tdx_data_dir: isTdxConfig ? String(configParams.data_dir || '') : '',
     ...buildQmtFormFields(configParams)
   }
 }
@@ -615,6 +634,21 @@ const buildPayload = () => {
     })
   }
 
+  const isTdxPayload = (payload.type || '').toLowerCase() === 'tdx'
+  if (isTdxPayload) {
+    payload.config_params = { ...(payload.config_params || {}) }
+    const tdxDir = String(payload.tdx_data_dir || '').trim()
+    if (tdxDir) {
+      payload.config_params.data_dir = tdxDir
+      payload.endpoint = `file://${tdxDir}`
+    } else {
+      delete payload.config_params.data_dir
+      payload.endpoint = ''
+    }
+    payload.provider = payload.provider || '通达信'
+  }
+  delete payload.tdx_data_dir
+
   return payload
 }
 
@@ -649,6 +683,12 @@ const allDataSourceTypes = [
     value: 'qmt',
     register_url: 'https://dict.thinktrader.net/nativeApi/code_examples.html',
     register_guide: 'QMT 需要本地安装并启动 QMT/xtquant。当前界面可直接配置安装目录、端口范围、初始化市场和自动补数等参数。'
+  },
+  {
+    label: '通达信（本地文件）',
+    value: 'tdx',
+    register_url: 'https://www.tdx.com.cn/',
+    register_guide: '通达信本地数据源直接读取客户端已下载的 vipdoc 日线文件，完全离线、无接口额度。请在下方填写通达信安装目录（包含 vipdoc 子目录）。'
   },
 
   // 专业数据源

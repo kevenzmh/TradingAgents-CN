@@ -245,6 +245,14 @@ def bridge_config_to_env():
                         logger.info(f"  ✓ 使用 .env 文件中的 QMT_TOKEN (长度: {len(existing_token)})")
                         bridged_count += 1
 
+                # TDX 本地数据目录
+                elif ds_config.type.value == 'tdx':
+                    tdx_dir = str((ds_config.config_params or {}).get("data_dir") or "").strip()
+                    if tdx_dir:
+                        os.environ['TDX_DATA_DIR'] = tdx_dir
+                        logger.info(f"  ✓ 使用数据库中的 TDX_DATA_DIR: {tdx_dir}")
+                        bridged_count += 1
+
         # 4. 桥接数据源细节配置（超时、重试、缓存等）
         bridged_count += _bridge_datasource_details(data_source_configs)
 

@@ -7,5 +7,6 @@ from .local_adapter import LocalAdapter
 from .tushare_adapter import TushareAdapter
 from .akshare_adapter import AKShareAdapter
 from .baostock_adapter import BaoStockAdapter
+from .tdx_adapter import TDXAdapter
 from .manager import DataSourceManager
 

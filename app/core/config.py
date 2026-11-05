@@ -372,6 +372,10 @@ class Settings(BaseSettings):
 
     # BaoStock 配置
     ENABLE_BAOSTOCK: bool = Field(default=True, description="是否启用BaoStock数据源（同步股票列表、每日行情、估值数据等）")
+
+    # 通达信（TDX）本地文件配置
+    TDX_DATA_DIR: str = Field(default="", description="通达信客户端安装目录（其下的 vipdoc/ 保存日线文件）")
+    TDX_UNIFIED_ENABLED: bool = Field(default=True, description="启用通达信本地数据源（需 TDX_DATA_DIR 指向有效目录）")
     QMT_HISTORY_START_TIME: str = Field(default="", description="QMT历史数据自动下载起始日期 YYYYMMDD")
     QMT_HISTORICAL_SYNC_DAYS: int = Field(default=365, ge=1, le=3650, description="QMT历史数据同步天数")
     QMT_HISTORICAL_BATCH_SIZE: int = Field(default=100, ge=1, le=1000, description="QMT历史数据同步批量大小")

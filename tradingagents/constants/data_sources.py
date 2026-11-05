@@ -46,6 +46,7 @@ class DataSourceCode(str, Enum):
     WIND = "wind"        # Wind 万得 - 专业金融终端
     CHOICE = "choice"    # 东方财富 Choice - 专业金融数据
     QMT = "qmt"          # 迅投 QMT - 券商量化终端（需 QMT 运行）
+    TDX = "tdx"          # 通达信 - 读取本地 vipdoc 行情文件（离线、免费、无额度）
     
     # ==================== 其他数据源 ====================
     QUANDL = "quandl"        # Quandl - 经济和金融数据
@@ -235,6 +236,20 @@ DATA_SOURCE_REGISTRY: Dict[str, DataSourceInfo] = {
         official_website="https://www.xuntou.net/",
         documentation_url="https://qmt.ptradeapi.com/QMT_Python_API_Doc.html",
         features=["历史行情", "实时行情", "K线数据", "需 QMT 运行", "不支持新闻"],
+    ),
+
+    # TDX（通达信本地文件）
+    DataSourceCode.TDX: DataSourceInfo(
+        code=DataSourceCode.TDX,
+        name="TDX",
+        display_name="通达信本地数据",
+        provider="通达信",
+        description="读取通达信客户端已下载的 vipdoc 行情文件，完全离线、无接口额度，含复权除权数据",
+        supported_markets=["a_shares"],
+        requires_api_key=False,
+        is_free=True,
+        official_website="https://www.tdx.com.cn/",
+        features=["日线/周线/月线", "前复权/后复权", "无额度限制", "离线可用", "不支持新闻与财务"],
     ),
 
     # Choice

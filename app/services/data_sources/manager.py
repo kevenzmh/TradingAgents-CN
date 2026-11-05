@@ -13,6 +13,7 @@ from .tushare_adapter import TushareAdapter
 from .akshare_adapter import AKShareAdapter
 from .baostock_adapter import BaoStockAdapter
 from .qmt_adapter import QMTAdapter
+from .tdx_adapter import TDXAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class DataSourceManager:
             AKShareAdapter(),
             BaoStockAdapter(),
             QMTAdapter(),        # 迅投 QMT（需 QMT 运行，新闻用 AKShare）
+            TDXAdapter(),        # 通达信本地 vipdoc 文件（离线，无额度）
         ]
 
         # 使用统一的数据源优先级模块加载配置

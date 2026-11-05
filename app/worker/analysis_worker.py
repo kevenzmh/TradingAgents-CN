@@ -120,6 +120,9 @@ async def jit_sync_stock_data(stock_code: str, parameters_dict: Dict[str, Any]) 
         elif source_name == "baostock":
             from tradingagents.dataflows.providers.china.baostock import get_baostock_provider
             return get_baostock_provider()
+        elif source_name == "tdx":
+            from tradingagents.dataflows.providers.china.tdx import get_tdx_provider
+            return get_tdx_provider()
         return None
 
     from app.services.historical_data_service import HistoricalDataService

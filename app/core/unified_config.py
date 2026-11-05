@@ -49,6 +49,37 @@ def _apply_env_overrides(data_sources: List) -> None:
         print(f"⚠️ [unified_config] .env 覆盖检查失败: {e}")
 
 
+def _append_env_tdx_config(data_sources: List) -> None:
+    """数据库里没有 tdx 数据源时，按 .env 的 TDX_DATA_DIR 补一条。
+
+    新装的通达信只需在 .env 填目录即可生效，无需先在界面里加一条配置。
+    """
+    try:
+        from app.core.config import settings as runtime_settings
+
+        data_dir = str(getattr(runtime_settings, "TDX_DATA_DIR", "") or "").strip()
+        if not data_dir:
+            return
+        if any(str(getattr(ds, "type", "")).lower().endswith("tdx") for ds in data_sources):
+            return
+
+        enabled = bool(getattr(runtime_settings, "TDX_UNIFIED_ENABLED", True))
+        data_sources.append(DataSourceConfig(
+            name="TDX",
+            type=DataSourceType.TDX,
+            endpoint=f"file://{data_dir}",
+            enabled=enabled,
+            priority=2,
+            description="通达信本地行情文件（离线、无额度）",
+            config_params={"data_dir": data_dir},
+            market_categories=["a_shares"],
+        ))
+        data_sources.sort(key=lambda x: x.priority, reverse=True)
+        print(f"✅ [unified_config] 已按 TDX_DATA_DIR 补充通达信数据源: {data_dir} (enabled={enabled})")
+    except Exception as e:
+        print(f"⚠️ [unified_config] 补充通达信数据源失败: {e}")
+
+
 @dataclass
 class ConfigPaths:
     """配置文件路径"""
@@ -335,6 +366,9 @@ class UnifiedConfigManager:
                 # 🆕 应用 .env 中的 enabled 覆盖（.env 设置的开关优先级最高）
                 _apply_env_overrides(result)
 
+                # 🆕 数据库里没有 tdx 时，按 .env 的 TDX_DATA_DIR 补一条，避免必须先手动加配置
+                _append_env_tdx_config(result)
+
                 UnifiedConfigManager._ds_config_cache = result
                 UnifiedConfigManager._ds_config_cache_time = now
                 return result
@@ -418,6 +452,20 @@ class UnifiedConfigManager:
                 description="BaoStock 开源金融数据接口"
             )
             data_sources.append(baostock_config)
+
+            # TDX（通达信本地文件）
+            tdx_data_dir = str(getattr(runtime_settings, "TDX_DATA_DIR", "") or "").strip()
+            if tdx_data_dir:
+                data_sources.append(DataSourceConfig(
+                    name="TDX",
+                    type=DataSourceType.TDX,
+                    endpoint=f"file://{tdx_data_dir}",
+                    enabled=bool(getattr(runtime_settings, "TDX_UNIFIED_ENABLED", True)),
+                    priority=2,
+                    description="通达信本地行情文件（离线、无额度）",
+                    config_params={"data_dir": tdx_data_dir},
+                    market_categories=["a_shares"],
+                ))
         except Exception:
             pass
 
@@ -540,6 +588,20 @@ class UnifiedConfigManager:
                 description="BaoStock 开源金融数据接口"
             )
             data_sources.append(baostock_config)
+
+            # TDX（通达信本地文件）
+            tdx_data_dir = str(getattr(runtime_settings, "TDX_DATA_DIR", "") or "").strip()
+            if tdx_data_dir:
+                data_sources.append(DataSourceConfig(
+                    name="TDX",
+                    type=DataSourceType.TDX,
+                    endpoint=f"file://{tdx_data_dir}",
+                    enabled=bool(getattr(runtime_settings, "TDX_UNIFIED_ENABLED", True)),
+                    priority=2,
+                    description="通达信本地行情文件（离线、无额度）",
+                    config_params={"data_dir": tdx_data_dir},
+                    market_categories=["a_shares"],
+                ))
         except Exception:
             pass
 
