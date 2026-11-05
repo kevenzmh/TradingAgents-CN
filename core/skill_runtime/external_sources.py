@@ -138,12 +138,12 @@ def get_external_historical_data(
         start_date: 起始日期（YYYY-MM-DD 或 YYYYMMDD）
         end_date: 结束日期（YYYY-MM-DD 或 YYYYMMDD）
         period: K 线周期，默认 "daily"；可选 "daily" / "weekly" / "monthly"（依上游数据源支持情况）
-        source: 指定数据源（"tushare" / "akshare" / "baostock"），为 None 时自动选择
+        source: 指定数据源（"tushare" / "akshare" / "baostock" / "tdx"），为 None 时自动选择
         market_category: 市场类别，默认 "a_shares"
 
     Returns:
         dict: 字段说明（代码中使用 .get() 或 [] 访问这些 key）——
-            source: 数据源标识: "tushare" | "akshare" | "baostock" | None（无可用源或调用失败时为 None）
+            source: 数据源标识: "tushare" | "akshare" | "baostock" | "tdx" | None（无可用源或调用失败时为 None）
             data: 行情序列列表，元素为按列归一化的 dict（trade_date/open/high/low/close/volume
                   等字段，依上游数据源而定）；无数据时为空列表 []
     """
@@ -164,6 +164,11 @@ def get_external_historical_data(
 
                 provider = get_baostock_provider()
                 result = run_async_in_sync(provider.get_historical_data(symbol, start_date, end_date, frequency=period))
+            elif source_id == "tdx":
+                from tradingagents.dataflows.providers.china.tdx import get_tdx_provider
+
+                provider = get_tdx_provider()
+                result = run_async_in_sync(provider.get_historical_data(symbol, start_date, end_date, period=period))
             else:
                 continue
 
