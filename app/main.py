@@ -13,6 +13,18 @@ For commercial licensing, please contact: hsliup@163.com
 商业许可咨询，请联系：hsliup@163.com
 """
 
+import sys as _sys
+
+# Windows 下后端 stdout 常是 GBK 代码页，任何含 emoji/中文的 print 都会抛
+# UnicodeEncodeError。这里统一切成 UTF-8 + 替换不可编码字符，避免业务代码
+# 里的 print 把整条数据源配置读取链路带崩（表现为「已填目录仍不可用」）。
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware

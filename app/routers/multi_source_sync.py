@@ -62,7 +62,10 @@ async def get_data_sources_status():
             descriptions = {
                 "tushare": "专业金融数据API，提供高质量的A股数据和财务指标",
                 "akshare": "开源金融数据库，提供基础的股票信息",
-                "baostock": "免费开源的证券数据平台，提供历史数据"
+                "baostock": "免费开源的证券数据平台，提供历史数据",
+                "tdx": "读取通达信客户端已下载的本地行情文件，离线、无接口额度",
+                "qmt": "迅投 QMT 本地终端行情与交易通道",
+                "local": "用户通过 API 导入的本地数据",
             }
 
             status_item = {
@@ -115,7 +118,8 @@ async def get_current_data_source():
         descriptions = {
             "tushare": "专业金融数据API",
             "akshare": "开源金融数据库",
-            "baostock": "免费证券数据平台"
+            "baostock": "免费证券数据平台",
+            "tdx": "通达信本地行情文件（离线）",
         }
 
         result = {

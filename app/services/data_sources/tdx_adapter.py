@@ -79,6 +79,7 @@ class TDXAdapter(DataSourceAdapter):
     def __init__(self):
         super().__init__()
         self._tdx_dir: Optional[str] = None
+        self._tdx_dir_at: float = 0.0
         self._names: Optional[Dict[str, str]] = None
         self._events: Optional[pd.DataFrame] = None
         self._events_loaded_at: float = 0.0
@@ -98,7 +99,8 @@ class TDXAdapter(DataSourceAdapter):
         return 2
 
     def _resolve_dir(self) -> Optional[str]:
-        if self._tdx_dir is not None:
+        # 目录解析结果带 TTL：用户可能在界面里改配置，长驻进程不能永久记着旧值。
+        if self._tdx_dir is not None and time.monotonic() - self._tdx_dir_at < _CACHE_TTL_SECONDS:
             return self._tdx_dir or None
 
         candidate = (os.getenv("TDX_DATA_DIR") or "").strip()
@@ -115,7 +117,9 @@ class TDXAdapter(DataSourceAdapter):
                 from app.core.unified_config import UnifiedConfigManager
 
                 for item in UnifiedConfigManager().get_data_source_configs():
-                    if str(getattr(item, "type", "")).lower() != "tdx":
+                    # type 是 DataSourceType 枚举，str() 得到 "DataSourceType.TDX"，
+                    # 必须先取 .value 再比较，否则配置里的目录永远读不到。
+                    if _source_type_value(getattr(item, "type", "")).lower() != "tdx":
                         continue
                     params = getattr(item, "config_params", None) or {}
                     candidate = str(params.get("data_dir") or "").strip()
@@ -125,6 +129,7 @@ class TDXAdapter(DataSourceAdapter):
                 candidate = ""
 
         self._tdx_dir = candidate
+        self._tdx_dir_at = time.monotonic()
         return candidate or None
 
     def _has_vipdoc(self, root: str) -> bool:
@@ -350,6 +355,11 @@ class TDXAdapter(DataSourceAdapter):
     def get_news(self, code: str, days: int = 2, limit: int = 50, include_announcements: bool = True):
         """通达信本地文件不含新闻公告。"""
         return None
+
+
+def _source_type_value(value: Any) -> str:
+    """把 DataSourceType 枚举 / 字符串统一成小写标识（如 "tdx"）。"""
+    return str(getattr(value, "value", value) or "").strip().lower()
 
 
 def _as_float(value: Any) -> Optional[float]:

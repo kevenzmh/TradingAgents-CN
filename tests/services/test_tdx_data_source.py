@@ -233,6 +233,41 @@ def test_availability_cache_is_keyed_by_directory(tmp_path: Path, monkeypatch):
     assert TDXAdapter().is_available() is False
 
 
+def test_resolves_directory_from_datasource_config(tdx_root: Path, monkeypatch):
+    """界面里配置的 data_dir 必须能读到。
+
+    DataSourceConfig.type 是 DataSourceType 枚举，str() 出来是
+    "DataSourceType.TDX"，直接和 "tdx" 比较会永远不相等——这正是
+    「已经填了目录，页面仍显示不可用」的原因。
+    """
+    from app.core.unified_config import UnifiedConfigManager
+    from app.models.config import DataSourceConfig, DataSourceType
+
+    monkeypatch.delenv("TDX_DATA_DIR", raising=False)
+    monkeypatch.setattr(
+        "app.core.config.settings.TDX_DATA_DIR", "", raising=False
+    )
+    monkeypatch.setattr(
+        UnifiedConfigManager,
+        "get_data_source_configs",
+        lambda self: [
+            DataSourceConfig(
+                name="tdx",
+                type=DataSourceType.TDX,
+                enabled=True,
+                config_params={"data_dir": str(tdx_root)},
+            )
+        ],
+    )
+    TDXAdapter._available_cache = {}
+    TDXAdapter._available_checked_at = {}
+
+    adapter = TDXAdapter()
+
+    assert adapter._resolve_dir() == str(tdx_root)
+    assert adapter.is_available() is True
+
+
 def test_provider_outputs_qfq_with_pre_close(tdx_root: Path, monkeypatch):
     """机构链路按前复权落库，且需要 pre_close 供入库时算 pct_chg。"""
     import asyncio

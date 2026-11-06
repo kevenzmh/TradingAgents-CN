@@ -513,6 +513,12 @@ const handleTypeChange = () => {
     formData.value.qmt_listen_port_range = formData.value.qmt_listen_port_range || qmtDefaultConfig.listen_port_range
     formData.value.qmt_init_markets = formData.value.qmt_init_markets || qmtDefaultConfig.init_markets
   }
+
+  // 通达信是本地文件，比在线源更稳更快，默认给到与 AKShare 同级的 2；
+  // 用表单默认值 0 会让它永远排在其他数据源之后，优先数据源里选了也不生效。
+  if (selectedType === 'tdx' && !formData.value.priority) {
+    formData.value.priority = 2
+  }
 }
 
 // 表单数据

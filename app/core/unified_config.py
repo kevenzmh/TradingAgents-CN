@@ -18,6 +18,24 @@ from app.models.config import (
 )
 
 
+def _safe_print(message: str) -> None:
+    """print 到控制台，但绝不因编码问题抛出异常。
+
+    Windows 下后端 stdout 常被重定向成 GBK 代码页，直接 print 中文 emoji
+    会抛 UnicodeEncodeError。这些 print 都在 try 块内，异常会一路冒到调用方，
+    导致「读取数据源配置」整体失败——界面上就表现为「已填目录仍不可用」。
+    """
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        try:
+            print(message.encode("utf-8", "replace").decode("utf-8", "replace"))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 # 🆕 .env 中数据源开关覆盖映射：env_key -> DataSourceType value
 _ENV_OVERRIDE_MAP = {
     "ENABLE_BAOSTOCK": "baostock",
@@ -43,10 +61,10 @@ def _apply_env_overrides(data_sources: List) -> None:
                     old_enabled = ds.enabled
                     ds.enabled = bool(env_val)
                     if old_enabled != ds.enabled:
-                        print(f"🔧 [unified_config] .env 覆盖: {ds.name} enabled={ds.enabled} (原={old_enabled})")
+                        _safe_print(f"🔧 [unified_config] .env 覆盖: {ds.name} enabled={ds.enabled} (原={old_enabled})")
                     break
     except Exception as e:
-        print(f"⚠️ [unified_config] .env 覆盖检查失败: {e}")
+        _safe_print(f"⚠️ [unified_config] .env 覆盖检查失败: {e}")
 
 
 def _append_env_tdx_config(data_sources: List) -> None:
@@ -60,7 +78,9 @@ def _append_env_tdx_config(data_sources: List) -> None:
         data_dir = str(getattr(runtime_settings, "TDX_DATA_DIR", "") or "").strip()
         if not data_dir:
             return
-        if any(str(getattr(ds, "type", "")).lower().endswith("tdx") for ds in data_sources):
+        # type 是 DataSourceType 枚举，str() 出来是 "DataSourceType.TDX"，要取 .value
+        if any(str(getattr(getattr(ds, "type", ""), "value", getattr(ds, "type", ""))).lower() == "tdx"
+               for ds in data_sources):
             return
 
         enabled = bool(getattr(runtime_settings, "TDX_UNIFIED_ENABLED", True))
@@ -75,9 +95,9 @@ def _append_env_tdx_config(data_sources: List) -> None:
             market_categories=["a_shares"],
         ))
         data_sources.sort(key=lambda x: x.priority, reverse=True)
-        print(f"✅ [unified_config] 已按 TDX_DATA_DIR 补充通达信数据源: {data_dir} (enabled={enabled})")
+        _safe_print(f"✅ [unified_config] 已按 TDX_DATA_DIR 补充通达信数据源: {data_dir} (enabled={enabled})")
     except Exception as e:
-        print(f"⚠️ [unified_config] 补充通达信数据源失败: {e}")
+        _safe_print(f"⚠️ [unified_config] 补充通达信数据源失败: {e}")
 
 
 @dataclass
@@ -141,7 +161,7 @@ class UnifiedConfigManager:
         except FileNotFoundError:
             return {}
         except json.JSONDecodeError as e:
-            print(f"配置文件格式错误 {file_path}: {e}")
+            _safe_print(f"配置文件格式错误 {file_path}: {e}")
             return {}
     
     def _save_json_file(self, file_path: Path, data: Dict[str, Any], cache_key: str = None):
@@ -185,7 +205,7 @@ class UnifiedConfigManager:
                 )
                 llm_configs.append(llm_config)
             except Exception as e:
-                print(f"转换模型配置失败: {model}, 错误: {e}")
+                _safe_print(f"转换模型配置失败: {model}, 错误: {e}")
                 continue
 
         return llm_configs
@@ -223,7 +243,7 @@ class UnifiedConfigManager:
             return True
             
         except Exception as e:
-            print(f"保存LLM配置失败: {e}")
+            _safe_print(f"保存LLM配置失败: {e}")
             return False
     
     # ==================== 系统设置管理 ====================
@@ -235,60 +255,60 @@ class UnifiedConfigManager:
     def save_system_settings(self, settings: Dict[str, Any]) -> bool:
         """保存系统设置（保留现有字段，添加新字段映射）"""
         try:
-            print(f"📝 [unified_config] save_system_settings 被调用")
-            print(f"📝 [unified_config] 接收到的 settings 包含 {len(settings)} 项")
+            _safe_print(f"📝 [unified_config] save_system_settings 被调用")
+            _safe_print(f"📝 [unified_config] 接收到的 settings 包含 {len(settings)} 项")
 
             # 检查关键字段
             if "quick_analysis_model" in settings:
-                print(f"  ✓ [unified_config] 包含 quick_analysis_model: {settings['quick_analysis_model']}")
+                _safe_print(f"  ✓ [unified_config] 包含 quick_analysis_model: {settings['quick_analysis_model']}")
             else:
-                print(f"  ⚠️  [unified_config] 不包含 quick_analysis_model")
+                _safe_print(f"  ⚠️  [unified_config] 不包含 quick_analysis_model")
 
             if "deep_analysis_model" in settings:
-                print(f"  ✓ [unified_config] 包含 deep_analysis_model: {settings['deep_analysis_model']}")
+                _safe_print(f"  ✓ [unified_config] 包含 deep_analysis_model: {settings['deep_analysis_model']}")
             else:
-                print(f"  ⚠️  [unified_config] 不包含 deep_analysis_model")
+                _safe_print(f"  ⚠️  [unified_config] 不包含 deep_analysis_model")
 
             # 读取现有配置
-            print(f"📖 [unified_config] 读取现有配置文件: {self.paths.settings_json}")
+            _safe_print(f"📖 [unified_config] 读取现有配置文件: {self.paths.settings_json}")
             current_settings = self.get_system_settings()
-            print(f"📖 [unified_config] 现有配置包含 {len(current_settings)} 项")
+            _safe_print(f"📖 [unified_config] 现有配置包含 {len(current_settings)} 项")
 
             # 合并配置（新配置覆盖旧配置）
             merged_settings = current_settings.copy()
             merged_settings.update(settings)
-            print(f"🔀 [unified_config] 合并后配置包含 {len(merged_settings)} 项")
+            _safe_print(f"🔀 [unified_config] 合并后配置包含 {len(merged_settings)} 项")
 
             # 添加字段名映射（新字段名 -> 旧字段名）
             if "quick_analysis_model" in settings:
                 merged_settings["quick_think_llm"] = settings["quick_analysis_model"]
-                print(f"  ✓ [unified_config] 映射 quick_analysis_model -> quick_think_llm: {settings['quick_analysis_model']}")
+                _safe_print(f"  ✓ [unified_config] 映射 quick_analysis_model -> quick_think_llm: {settings['quick_analysis_model']}")
 
             if "deep_analysis_model" in settings:
                 merged_settings["deep_think_llm"] = settings["deep_analysis_model"]
-                print(f"  ✓ [unified_config] 映射 deep_analysis_model -> deep_think_llm: {settings['deep_analysis_model']}")
+                _safe_print(f"  ✓ [unified_config] 映射 deep_analysis_model -> deep_think_llm: {settings['deep_analysis_model']}")
 
             # 打印最终要保存的配置
-            print(f"💾 [unified_config] 即将保存到文件:")
+            _safe_print(f"💾 [unified_config] 即将保存到文件:")
             if "quick_think_llm" in merged_settings:
-                print(f"  ✓ quick_think_llm: {merged_settings['quick_think_llm']}")
+                _safe_print(f"  ✓ quick_think_llm: {merged_settings['quick_think_llm']}")
             if "deep_think_llm" in merged_settings:
-                print(f"  ✓ deep_think_llm: {merged_settings['deep_think_llm']}")
+                _safe_print(f"  ✓ deep_think_llm: {merged_settings['deep_think_llm']}")
             if "quick_analysis_model" in merged_settings:
-                print(f"  ✓ quick_analysis_model: {merged_settings['quick_analysis_model']}")
+                _safe_print(f"  ✓ quick_analysis_model: {merged_settings['quick_analysis_model']}")
             if "deep_analysis_model" in merged_settings:
-                print(f"  ✓ deep_analysis_model: {merged_settings['deep_analysis_model']}")
+                _safe_print(f"  ✓ deep_analysis_model: {merged_settings['deep_analysis_model']}")
 
             # 保存合并后的配置
-            print(f"💾 [unified_config] 保存到文件: {self.paths.settings_json}")
+            _safe_print(f"💾 [unified_config] 保存到文件: {self.paths.settings_json}")
             self._save_json_file(self.paths.settings_json, merged_settings, "settings")
-            print(f"✅ [unified_config] 配置保存成功")
+            _safe_print(f"✅ [unified_config] 配置保存成功")
 
             return True
         except Exception as e:
-            print(f"❌ [unified_config] 保存系统设置失败: {e}")
+            _safe_print(f"❌ [unified_config] 保存系统设置失败: {e}")
             import traceback
-            print(traceback.format_exc())
+            _safe_print(traceback.format_exc())
             return False
     
     def get_default_model(self) -> str:
@@ -349,7 +369,7 @@ class UnifiedConfigManager:
             if config_data and config_data.get('data_source_configs'):
                 # 从数据库读取到配置
                 data_source_configs = config_data.get('data_source_configs', [])
-                print(f"✅ [unified_config] 从数据库读取到 {len(data_source_configs)} 个数据源配置")
+                _safe_print(f"✅ [unified_config] 从数据库读取到 {len(data_source_configs)} 个数据源配置")
 
                 # 转换为 DataSourceConfig 对象
                 result = []
@@ -357,7 +377,7 @@ class UnifiedConfigManager:
                     try:
                         result.append(DataSourceConfig(**ds_config))
                     except Exception as e:
-                        print(f"⚠️ [unified_config] 解析数据源配置失败: {e}, 配置: {ds_config}")
+                        _safe_print(f"⚠️ [unified_config] 解析数据源配置失败: {e}, 配置: {ds_config}")
                         continue
 
                 # 按优先级排序（数字越大优先级越高）
@@ -373,9 +393,9 @@ class UnifiedConfigManager:
                 UnifiedConfigManager._ds_config_cache_time = now
                 return result
             else:
-                print("⚠️ [unified_config] 数据库中没有数据源配置，使用硬编码配置")
+                _safe_print("⚠️ [unified_config] 数据库中没有数据源配置，使用硬编码配置")
         except Exception as e:
-            print(f"⚠️ [unified_config] 从数据库读取数据源配置失败: {e}，使用硬编码配置")
+            _safe_print(f"⚠️ [unified_config] 从数据库读取数据源配置失败: {e}，使用硬编码配置")
 
         # 🔥 回退到硬编码配置（兼容性）
         settings = self.get_system_settings()
@@ -490,7 +510,7 @@ class UnifiedConfigManager:
             if config_data and config_data.get('data_source_configs'):
                 # 从数据库读取到配置
                 data_source_configs = config_data.get('data_source_configs', [])
-                print(f"✅ [unified_config] 从数据库读取到 {len(data_source_configs)} 个数据源配置")
+                _safe_print(f"✅ [unified_config] 从数据库读取到 {len(data_source_configs)} 个数据源配置")
 
                 # 转换为 DataSourceConfig 对象
                 result = []
@@ -498,7 +518,7 @@ class UnifiedConfigManager:
                     try:
                         result.append(DataSourceConfig(**ds_config))
                     except Exception as e:
-                        print(f"⚠️ [unified_config] 解析数据源配置失败: {e}, 配置: {ds_config}")
+                        _safe_print(f"⚠️ [unified_config] 解析数据源配置失败: {e}, 配置: {ds_config}")
                         continue
 
                 # 按优先级排序（数字越大优先级越高）
@@ -509,9 +529,9 @@ class UnifiedConfigManager:
 
                 return result
             else:
-                print("⚠️ [unified_config] 数据库中没有数据源配置，使用硬编码配置")
+                _safe_print("⚠️ [unified_config] 数据库中没有数据源配置，使用硬编码配置")
         except Exception as e:
-            print(f"⚠️ [unified_config] 从数据库读取数据源配置失败: {e}，使用硬编码配置")
+            _safe_print(f"⚠️ [unified_config] 从数据库读取数据源配置失败: {e}，使用硬编码配置")
 
         # 🔥 回退到硬编码配置（兼容性）
         settings = self.get_system_settings()
@@ -668,7 +688,7 @@ class UnifiedConfigManager:
             )
             return config
         except Exception as e:
-            print(f"获取统一配置失败: {e}")
+            _safe_print(f"获取统一配置失败: {e}")
             # 返回默认配置
             return SystemConfig(
                 config_name="默认配置",
@@ -708,7 +728,7 @@ class UnifiedConfigManager:
 
             return True
         except Exception as e:
-            print(f"同步配置到传统格式失败: {e}")
+            _safe_print(f"同步配置到传统格式失败: {e}")
             return False
 
 
