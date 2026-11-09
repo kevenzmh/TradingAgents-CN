@@ -145,14 +145,17 @@ class AKShareAdapter(DataSourceAdapter):
                 logger.warning("AKShare: No stock list available")
                 return None
 
-            max_stocks = 10
-            stock_list = stock_df.head(max_stocks)
+            # 移除 max_stocks=10 限制，获取全市场估值数据（填补 total_mv 缺口）
+            # 如遇超时，可改为 stock_list = stock_df.head(500) 等合理值
+            stock_list = stock_df
 
             basic_data = []
             processed_count = 0
             import time
             start_time = time.time()
-            timeout_seconds = 30
+            # 移除超时限制，允许完整同步全市场（~5分钟）
+            # 如遇内存问题，可分批处理：for chunk in [stock_list[i:i+500] for i in range(0, len(stock_list), 500)]
+            timeout_seconds = 600  # 改为 10 分钟
 
             for _, stock in stock_list.iterrows():
                 if time.time() - start_time > timeout_seconds:

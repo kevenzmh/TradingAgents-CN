@@ -131,6 +131,70 @@ class DatabaseScreeningService:
             "contains": "$regex",   # 字符串包含
         }
     
+    async def _resolve_effective_source(
+        self,
+        db,
+        base_query: Dict[str, Any],
+    ) -> str:
+        """返回真正有数据的筛选数据源。
+
+        数据源优先级只说明"期望用哪个源"，不代表库里真有数据，也不代表哪个源
+        覆盖得全：通达信只供行情不供估值，基础信息文档里几乎没有可筛选字段；
+        同一条条件在不同源下命中的股票数量可能差一个数量级。因此按候选逐个统计
+        命中数，取覆盖最广的那个；命中数相同才按优先级顺序取前者。
+        """
+        candidates: List[str] = []
+        preferred = ""
+        try:
+            from app.core.data_source_priority import get_available_data_sources_async
+
+            for name in await get_available_data_sources_async(market_category="a_shares"):
+                normalized = str(name or "").strip().lower()
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+            preferred = candidates[0] if candidates else ""
+        except Exception as exc:
+            logger.warning(f"⚠️ [database_screening] 读取可用数据源失败: {exc}")
+
+        # 库里已有、但适配器当前不可用的源也要作为候选，避免一次网络抖动就让整表筛选不可用
+        try:
+            for name in await db["stock_basic_info"].distinct("source"):
+                normalized = str(name or "").strip().lower()
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+        except Exception as exc:
+            logger.debug(f"枚举 stock_basic_info 数据源失败，仅按优先级候选: {exc}")
+
+        collection = db["stock_basic_info"]
+        counts: Dict[str, int] = {}
+        for candidate in candidates:
+            try:
+                counts[candidate] = await collection.count_documents(
+                    {**base_query, "source": candidate}
+                )
+            except Exception as exc:
+                # 统计失败不是筛选的前置条件：跳过该候选，不影响其余候选的判定
+                logger.debug(f"统计数据源 {candidate} 命中数失败: {exc}")
+
+        best = ""
+        for candidate in candidates:  # 保持优先级顺序作为并列时的取舍依据
+            if counts.get(candidate, 0) > counts.get(best, 0):
+                best = candidate
+        if not best:
+            logger.warning(
+                f"⚠️ [database_screening] 所有候选数据源均无匹配数据"
+                f"（候选: {', '.join(candidates) or '-'}），沿用首选源 {preferred or '-'}"
+            )
+            return preferred
+
+        if preferred and best != preferred:
+            shown = ", ".join(f"{name}={counts.get(name, 0)}" for name in candidates)
+            logger.warning(
+                f"⚠️ [database_screening] 首选数据源 {preferred} 命中 {counts.get(preferred, 0)} 条，"
+                f"{best} 命中 {counts.get(best, 0)} 条，改用 {best}（{shown}）"
+            )
+        return best
+
     async def can_handle_conditions(self, conditions: List[Dict[str, Any]]) -> bool:
         """
         检查是否可以完全通过数据库筛选处理这些条件
@@ -181,17 +245,25 @@ class DatabaseScreeningService:
         try:
             db = get_mongo_db()
 
+            requested_source = source
             if not source:
                 from app.core.data_source_priority import get_preferred_data_source_async
                 source = await get_preferred_data_source_async(market_category="a_shares")
-                logger.info(f"✅ [database_screening] 最终使用的数据源: {source}")
+                logger.info(f"✅ [database_screening] 首选数据源: {source}")
 
             # 分离基础条件和行情条件
             basic_conditions, quote_conditions = self._separate_conditions(conditions)
 
             # 构建基础查询（仅包含非行情字段）
             query = await self._build_query(basic_conditions)
+
+            # 首选源没有数据时回退到下一个有数据的源（不改变基础条件）
+            if requested_source:
+                source = requested_source
+            else:
+                source = await self._resolve_effective_source(db, query)
             query["source"] = source
+            logger.info(f"📊 [database_screening] 最终使用的数据源: {source}")
 
             # 构建排序条件
             sort_conditions = self._build_sort_conditions(order_by)
@@ -401,6 +473,46 @@ class DatabaseScreeningService:
         
         return sort_conditions
     
+    async def _pick_source_with_docs(
+        self,
+        collection,
+        codes: List[str],
+        preferred: str,
+    ) -> str:
+        """在给定代码集合里挑一个真正有文档的数据源。
+
+        估值走 stock_basic_info、财务走 stock_financial_periods，两者覆盖的数据源
+        不一定相同（如通达信只供行情、财务只有 akshare）。若仍按首选源硬过滤，
+        富集结果会整片变空。
+        """
+        if not codes:
+            return preferred
+        code_filter = {"code": {"$in": list(codes)}}
+        if preferred:
+            try:
+                if await collection.find_one({**code_filter, "source": preferred}, {"_id": 1}) is not None:
+                    return preferred
+            except Exception as exc:
+                logger.debug(f"数据源探测失败({preferred}): {exc}")
+        try:
+            sources = [
+                str(name).strip()
+                for name in await collection.distinct("source", code_filter)
+                if str(name or "").strip()
+            ]
+        except Exception as exc:
+            logger.warning(f"⚠️ [database_screening] 枚举可用数据源失败: {exc}")
+            return preferred
+        if not sources:
+            return preferred
+        if preferred and preferred in sources:
+            return preferred
+        logger.info(
+            f"ℹ️ [database_screening] 数据源 {preferred or '-'} 在这些代码下无数据，"
+            f"富集改用 {sources[0]}"
+        )
+        return sources[0]
+
     async def _enrich_with_financial_data(self, results: List[Dict[str, Any]], codes: List[str]) -> None:
         """
         批量查询财务数据并填充到结果中
@@ -417,9 +529,16 @@ class DatabaseScreeningService:
             # 🔥 使用统一的数据源优先级管理函数
             from app.core.data_source_priority import get_preferred_data_source_async
             preferred_source = await get_preferred_data_source_async(market_category="a_shares")
+            # 首选源在估值表 / 财务表里可能根本没有数据，逐表回退
+            basic_info_source = await self._pick_source_with_docs(
+                basic_info_collection, codes, preferred_source
+            )
+            financial_source = await self._pick_source_with_docs(
+                financial_collection, codes, preferred_source
+            )
             basic_info_map: Dict[str, Dict[str, Any]] = {}
             basic_info_cursor = basic_info_collection.find(
-                {"code": {"$in": codes}, "source": preferred_source},
+                {"code": {"$in": codes}, "source": basic_info_source},
                 {
                     "_id": 0,
                     "code": 1,
@@ -520,7 +639,7 @@ class DatabaseScreeningService:
             # 批量查询最新的财务数据
             # 按 code 分组，取每个 code 的最新一期数据（只查询优先级最高的数据源）
             pipeline = [
-                {"$match": {"code": {"$in": codes}, "source": preferred_source}},
+                {"$match": {"code": {"$in": codes}, "source": financial_source}},
                 {"$sort": {"code": 1, "report_period": -1, "ann_date": -1}},
                 {"$group": {
                     "_id": "$code",

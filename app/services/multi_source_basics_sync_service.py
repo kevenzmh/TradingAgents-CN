@@ -31,6 +31,9 @@ STATUS_COLLECTION = "sync_status"
 JOB_KEY = "stock_basics_multi_source"
 STOCK_LIST_FETCH_TIMEOUT_SECONDS = 45
 
+# 纯本地读取的数据源：不消耗网络额度、不会因代理/断网失败，股票列表应优先尝试
+LOCAL_OFFLINE_SOURCES = {"tdx"}
+
 
 class DataSourcePriority(Enum):
     """数据源优先级枚举"""
@@ -263,6 +266,30 @@ class MultiSourceBasicsSyncService:
             )
         return normalized or None
 
+    @staticmethod
+    def _local_first(sources: Optional[List[str]]) -> Optional[List[str]]:
+        """把离线本地源提到队首。
+
+        股票列表这一步只需要"代码 + 名称"，通达信本地文件 1 秒内给全，而在线源
+        一次失败就要几十秒。整个列表获取共用 45 秒超时，在线源排在前面会把预算
+        耗尽，导致任务在轮不到本地源时整体失败。估值字段不受影响——那一步
+        (get_daily_basic) 会独立回退到在线源。
+        """
+        if not sources:
+            return sources
+        local = [s for s in sources if str(s).strip().lower() in LOCAL_OFFLINE_SOURCES]
+        rest = [s for s in sources if str(s).strip().lower() not in LOCAL_OFFLINE_SOURCES]
+        if not local or not rest:
+            return sources
+        reordered = local + rest
+        if reordered != list(sources):
+            logger.info(
+                "⚡ [多数据源基础信息同步] 本地离线源提前: %s > %s",
+                " > ".join(local),
+                " > ".join(rest),
+            )
+        return reordered
+
     async def _fetch_stock_list_with_retry(
         self,
         manager,
@@ -317,6 +344,7 @@ class MultiSourceBasicsSyncService:
 
         try:
             preferred_sources = self._normalize_preferred_sources(preferred_sources)
+            preferred_sources = self._local_first(preferred_sources)
             sync_start = time.perf_counter()
             logger.info(
                 "🚀 [多数据源基础信息同步] 开始执行: preferred_sources=%s",

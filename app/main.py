@@ -764,6 +764,26 @@ async def lifespan(app: FastAPI):
         else:
             logger.info(f"📊 AKShare历史数据同步已配置: {settings.AKSHARE_HISTORICAL_SYNC_CRON}")
 
+        # 🎯 技术指标物化任务（每日盘后计算 ma20/rsi14/kdj/macd）
+        async def run_technical_indicator_materialization():
+            """每日盘后物化技术指标，支持 ma20/rsi14 等筛选条件"""
+            try:
+                logger.info("🚀 [技术指标物化] 开始执行")
+                from app.services.technical_indicator_materialization_service import materialize_technical_indicators
+                result = await asyncio.to_thread(materialize_technical_indicators)
+                logger.info(f"✅ [技术指标物化] 完成: {result}")
+            except Exception as e:
+                logger.error(f"❌ [技术指标物化] 失败: {e}", exc_info=True)
+
+        scheduler.add_job(
+            run_technical_indicator_materialization,
+            CronTrigger(hour=19, minute=30),  # 盘后 19:30，晚于日线同步（18:00-19:00）
+            id="technical_indicator_materialization",
+            name="每日技术指标物化",
+            replace_existing=True
+        )
+        logger.info("✅ 已注册定时任务: 每日技术指标物化 (19:30)")
+
         # 财务数据同步任务
         scheduler.add_job(
             run_akshare_financial_sync,
